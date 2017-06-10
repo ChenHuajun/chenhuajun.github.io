@@ -12,7 +12,7 @@ layout: default
   {% endfor %}
 
 
-  {% for post in posts_collate  %}
+  {% for post in site.posts  %}
     {% capture this_year %}{{ post.date | date: "%Y" }}{% endcapture %}
     {% capture this_month %}{{ post.date | date: "%B" }}{% endcapture %}
     {% capture next_year %}{{ post.previous.date | date: "%Y" }}{% endcapture %}
@@ -34,7 +34,7 @@ layout: default
         {{ post.date | date: "%Y-%m-%e" }}
       </span>
        &raquo; 
-      <a href="{{ BASE_PATH }}{{ post.url }}">{{ post.title }}</a>
+      <a class="post-link" href="{{ post.url | prepend: site.baseurl }}">{{ post.title }}</a>
     </li>
  
     {% if forloop.last %}
