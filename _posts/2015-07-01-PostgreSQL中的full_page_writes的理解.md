@@ -1,5 +1,6 @@
+# PostgreSQL中的full_page_writes的理解
 
-# 1. full\_page_writes的作用
+## 1. full\_page_writes的作用
 
 PostgreSQL中的full\_page_writes参数用来防止部分页面写入导致崩溃后无法恢复的问题。手册中的相关描述如下：
 
@@ -8,7 +9,7 @@ http://postgres.cn/docs/9.3/runtime-config-wal.html#GUC-FULL-PAGE-WRITES
 **full\_page_writes (boolean)**   
 打开这个选项的时候，PostgreSQL服务器在检查点之后对页面的第一次写入时将整个页面写到 WAL 里面。 这么做是因为在操作系统崩溃过程中可能只有部分页面写入磁盘， 从而导致在同一个页面中包含新旧数据的混合。在崩溃后的恢复期间， 由于在WAL里面存储的行变化信息不够完整，因此无法完全恢复该页。 把完整的页面影像保存下来就可以保证正确存储页面， 代价是增加了写入WAL的数据量。因为WAL重放总是从一个检查点开始的， 所以在检查点后每个页面第一次改变的时候做WAL备份就足够了。 因此，一个减小全页面写开销的方法是增加检查点的间隔参数值。
 
-# 2. 为什么崩溃后无法恢复部分写入的页面
+## 2. 为什么崩溃后无法恢复部分写入的页面
 为了理解这个问题，先看看在不考虑部分写入时PostgreSQL的处理逻辑。可以简单概括如下：
 
 1. 对数据页面的修改操作会引起页面中数据的变化。
@@ -26,17 +27,17 @@ http://postgres.cn/docs/9.3/runtime-config-wal.html#GUC-FULL-PAGE-WRITES
 
 然而，在部分写入时，页面将不再是上面的任何一个状态，而是新旧混合的不一致的状态。如果pd\_lsn存的是新值，那么根本就不进行恢复；如果是旧值，由于恢复操作本来是要基于修改前的状态的，在中间状态上执行未必能成功，即使恢复涉及的数据部分恢复了也不能纠正页面其它地方的不一致。为了解决这个问题，PostgreSQL引入了full_page_writes，checkpoint后的第一次页面修改将完全的页内容记录到WAL，之后从上次的checkpoint点开始恢复时，先取得这个完成的页面内容然后再在其上重放后续的修改操作。
 
-# 3. 避免部分写入
+## 3. 避免部分写入
 full_page_writes会带来很大的IO开销，所以条件许可的话可以使用支持原子块写入的存储设备或文件系统（比如ZFS）避免部分写入。
 
-# 4. 其它数据库的处理
+## 4. 其它数据库的处理
 MySQL中有类似的防止部分写入的机制，叫innodb_doublewrite。原理类似，但实现稍有不同，innodb_doublewrite生效时，在写真正的数据页前，把数据页写到doublewrite buffer中，doublewrite buffer写完并刷新后才往真正的数据页写入数据。
 
 可参考:   
 http://dev.mysql.com/doc/refman/5.6/en/glossary.html#glos_doublewrite_buffer
 
 
-# 5. 参考
+## 5. 参考
 可以参考某个XLOG的恢复代码，比如heap_xlog_insert()。
 
 src/backend/access/heap/heapam.c
