@@ -2,7 +2,7 @@
 
 ## 前言
 
-PostgreSQL在写入频繁的场景中，会产生大量的WAL日志，而且WAL日志量会远远超过实际更新的数据量。
+PostgreSQL在写入频繁的场景中，可能会产生大量的WAL日志，而且WAL日志量远远超过实际更新的数据量。
 我们可以把这种现象起个名字,叫做“WAL写放大”，造成WAL写放大的主要原因有2点。
 
 1. 在checkpoint之后第一次修改页面，需要在WAL中输出整个page，即全页写(full page writes)。全页写的目的是防止在意外宕机时出现的数据块部分写导致数据库无法恢复。
@@ -11,7 +11,7 @@ PostgreSQL在写入频繁的场景中，会产生大量的WAL日志，而且WAL�
 过量的WAL输出会对系统资源造成很大的消耗，因此需要进行适当的优化。
 
 1. 磁盘IO  
-	WAL写入是顺序写,通常再差的硬盘对付WAL的写入速度也是绰绰有余。所以一般可以忽略。
+	WAL写入是顺序写,通常情况下硬盘对付WAL的顺序写入是绰绰有余的。所以一般可以忽略。
 
 2. 网络IO  
 	对局域网内的复制估计还不算问题，远程复制就难说了。
@@ -45,12 +45,12 @@ src/include/access/xlogrecord.h:
 	如果是checkpoint之后第一次修改页面，则输出整个page的内容(即full page image，简称FPI)。但是page中没有数据的hole部分会被排除，如果设置了`wal_compression = on`还会对这page上的数据进行压缩。
 
 - buffer data  
-	不需要输出FPI时，就只输出page中指定的输出数据。
+	不需要输出FPI时，就只输出page中指定的数据。
 
 - full page image + buffer data  
-	逻辑复制时，即使输出了FPI，也要指定的输出数据。
+	逻辑复制时，即使输出了FPI，也要输出指定的数据。
 
-究竟"block data"中存的是什么内容，通过前面的XLogRecordBlockHeader中的`fork_flags`描述。这里的XLogRecordBlockHeader其实也只是个概括的说法，实际上后面还跟了一些其它的Header。完整的结构如下:
+究竟"block data"中存的是什么内容，通过前面的XLogRecordBlockHeader中的`fork_flags`进行描述。这里的XLogRecordBlockHeader其实也只是个概括的说法，实际上后面还跟了一些其它的Header。完整的结构如下:
 
 	XLogRecordBlockHeader 
 	XLogRecordBlockImageHeader (可选，包含FPI时存在）
@@ -131,7 +131,7 @@ PostgreSQL的安装目录下有个叫做`pg_xlogdump`的命令可以解析WAL文
 	这是一条UPDATE类型的记录(每个资源管理器最多包含16种不同的WAL记录类型，)，旧tuple在page中的位置为30(即ctid的后半部分)，新tuple在page中的位置为20。
 
 - `blkref #0: rel 1663/13269/54349226 fork main blk 1640350`  
-	引用的第一个page(新tuple所在page)所属的对表文件为`1663/13269/54349226`,块号为`1640350`(即ctid的前半部分)。通过oid2name可以查到是哪个堆表。
+	引用的第一个page(新tuple所在page)所属的堆表文件为`1663/13269/54349226`,块号为`1640350`(即ctid的前半部分)。通过oid2name可以查到是哪个堆表。
 
 		-bash-4.1$ oid2name -f 54349226
 		From database "postgres":
@@ -140,7 +140,7 @@ PostgreSQL的安装目录下有个叫做`pg_xlogdump`的命令可以解析WAL文
 		  54349226  pgbench_accounts
 
 - `blkref #1: rel 1663/13269/54349226 fork main blk 1174199`  
-	引用的第二个page(旧tuple所在page)所属的对表文件及块号
+	引用的第二个page(旧tuple所在page)所属的堆表文件及块号
 
 
 UPDATE语句除了产生UPDATE类型的WAL记录，实际上还会在前面产生一条LOCK记录，可选的还可能在后面产生若干索引更新的WAL记录。
@@ -174,6 +174,7 @@ PostgreSQL 9.5以后的`pg_xlogdump`都带有统计功能，可以查看不同�
 	checkpoint_timeout = 5min
 	min_wal_size = 1GB
 	max_wal_size = 4GB
+	full_page_writes = on
 	wal_log_hints = on
 	wal_level = replica
 	wal_keep_segments = 1000
@@ -271,7 +272,7 @@ PostgreSQL 9.5以后的`pg_xlogdump`都带有统计功能，可以查看不同�
 	Total                                    1070232                      81776378 [4.38%]            1784208256 [95.62%]           1865984634 [100%]
 
 
-这上面可以看出，有95.62%的WAL空间都被FPI占据了（也就是说WAL至少被放大了20倍)，这个的比例是相当高的。
+这上面可以看出，有95.62%的WAL空间都被FPI占据了（也就是说WAL至少被放大了20倍)，这个比例是相当高的。
 
 
 如果不修改`pg_xlogdump`的代码,也可以通过计算WAL距离的方式，算出准确的FPI比例。
@@ -294,14 +295,16 @@ PostgreSQL 9.5以后的`pg_xlogdump`都带有统计功能，可以查看不同�
 在应用的写负载不变的情况下，减少WAL生成量主要有下面几种办法。
 
 1. 延长checkpoint时间间隔  
-	FPI产生于checkpoint之后第一次变脏的page，在下次checkpoint到了之前，已经输出过PFI的page是不需要再次输出FPI。因此checkpoint时间间隔越长，FPI产生的频度会越低。增大`checkpoint_timeout`和`max_wal_size`可以延长checkpoint时间间隔。
+	FPI产生于checkpoint之后第一次变脏的page，在下次checkpoint到来之前，已经输出过PFI的page是不需要再次输出FPI的。因此checkpoint时间间隔越长，FPI产生的频度会越低。增大`checkpoint_timeout`和`max_wal_size`可以延长checkpoint时间间隔。
 
 2. 增加`HOT_UPDATE`比例  
-	普通的`UPDATE`经常需要更新2个数据块，并且可能还要更新索引page，这些又都有可能产生FPI。而`HOT_UPDATE`只修改1个数据块，需要写的WAL量也大大减少。
+	普通的`UPDATE`经常需要更新2个数据块，并且可能还要更新索引page，这些又都有可能产生FPI。而`HOT_UPDATE`只修改1个数据块，需要写的WAL量也会相应减少。
 
 3. 压缩  
-	PostgreSQL9.5新增加了一个`wal_compression`参数，设为`on`可以对FPI进行压缩，削减WAL的大小。另外还可以在外部通过SSL/SSH的压缩功能减少主备间的通信流量，已经自定义归档脚本对归档的WAL进行压缩。
+	PostgreSQL9.5新增加了一个`wal_compression`参数，设为`on`可以对FPI进行压缩，削减WAL的大小。另外还可以在外部通过SSL/SSH的压缩功能减少主备间的通信流量，以及自定义归档脚本对归档的WAL进行压缩。
 
+4. 关闭全页写   
+	这是一个立竿见影但也很危险的办法，如果底层的文件系统或储存支持原子写可以考虑。因为很多部署环境都不具备安全的关闭全页写的条件，下文不对该方法做展开。
 
 #### 延长checkpoint时间
 
@@ -314,6 +317,7 @@ postgres.conf:
 	checkpoint_timeout = 60min
 	min_wal_size = 4GB
 	max_wal_size = 64GB
+	full_page_writes = on
 	wal_log_hints = on
 	wal_level = replica
 	wal_keep_segments = 1000
@@ -424,10 +428,10 @@ postgres.conf:
 |No  |tps   |非FPI大小  |WAL总量(字节)|FPI比例(%)|每事务产生的WAL(字节)|
 |----|------|----------|------------|---------|---------|
 |1   |12896 |64645794  |1502006526  | 95.70   |15020    |
-|5   |12896 |63348407  |827996387   | 92.35%  |8279     |
-|10  |12896 |66042176  |547726196   | 87.94%  |5477     |
+|5   |12896 |63348407  |827996387   | 92.35   |8279     |
+|10  |12896 |66042176  |547726196   | 87.94   |5477     |
 
-不难看出非FPI大小是相对固定的，FPI的大小越来越小，这也证实了延迟checkpoint间隔对削减WAL大小的作用。
+不难看出非FPI大小是相对固定的，FPI的大小越来越小，这也证实了延长checkpoint间隔对削减WAL大小的作用。
 
 
 #### 增加`HOT_UPDATE`比例
@@ -637,7 +641,7 @@ postgres.conf:
 
 ### 总结
 
-PostgreSQL在未经优化的情况下，20倍甚至更高的WAL写放大是很常见的，适当的优化之后至少可以减少到3倍以下。引入SSL/SSH压缩或归档压缩等外部手段还可以进一步减少WAL的生成量。
+PostgreSQL在未经优化的情况下，20倍甚至更高的WAL写放大是很常见的，适当的优化之后应该可以减少到3倍以下。引入SSL/SSH压缩或归档压缩等外部手段还可以进一步减少WAL的生成量。
 
 #### 如何判断是否需要优化WAL？
 
@@ -646,25 +650,25 @@ PostgreSQL在未经优化的情况下，20倍甚至更高的WAL写放大是很�
 - FPI比例高于70%
 - `HOT_UPDATE`比例低于70%
 
-以上仅仅是粗略的经验值，仅供参考。并且这个FPI比例可能不适用于低写负载的系统，低写负载的系统FPI比例一定非常高，但是，低写负载系统由于写操作很少，因此FPI比例即使高一点也没太大影响。
+以上仅仅是粗略的经验值，仅供参考。并且这个FPI比例可能不适用于低写负载的系统，低写负载的系统FPI比例一定非常高，但是，低写负载系统由于写操作少，因此FPI比例即使高一点也没太大影响。
 
 #### 优化WAL的副作用
 
 前面用到了3种优化手段，如果设置不当，也会产生副作用，具体如下：
 
 1. 延长checkpoint时间间隔  
-	导致crash恢复时间变长。crash恢复时需要回放的WAL日志量一般小于`max_wal_size`的一半，WAL回放速度(`wal_compression=on`时)一般是50MB/s~150MB/s之间。可以根据可容忍的最大crash恢复时间，估算出允许的`max_wal_size`的最大值。
+	导致crash恢复时间变长。crash恢复时需要回放的WAL日志量一般小于`max_wal_size`的一半，WAL回放速度(`wal_compression=on`时)一般是50MB/s~150MB/s之间。可以根据可容忍的最大crash恢复时间（有备机时，切备机可能比等待crash恢复更快），估算出允许的`max_wal_size`的最大值。
 
 2. 调整fillfactor  
-	过小的设置会浪费存储空间，这个不难理解。另外，对于频繁更新的表，即使把fillfactor设成100%，每个page里还是要一部分空间被dead tuple占据，不会比设置成一个合适的稍小的fillfactor更节省空间。
+	过小的设置会浪费存储空间，这个不难理解。另外，对于频繁更新的表，即使把fillfactor设成100%，每个page里还是要有一部分空间被dead tuple占据，不会比设置一个合适的稍小的fillfactor更节省空间。
 
 3. 设置`wal_compression=on`  
-	需要额外占用CPU资源进行压缩，但影响不大。
+	需要额外占用CPU资源进行压缩，但根据实测的结果影响不大。
 
 
 #### 其他
 
-去年Uber放出了一篇把PostgreSQL说得一无是处的文章[为什么Uber宣布从PostgreSQL切换到MySQL?](http://www.tuicool.com/articles/Zn2yeuu)给PostgreSQL带来了很大负面影响。Uber文章中提到了PG的几个问题，每一个都被描述成无法逾越的“巨坑”。但实际上这些问题中，除了“写放大”，其它几个问题要么是无关痛痒要么是随着PG的版本升级早就不存在了。至于“写放大”，也是有解的。Uber的文章里没有提到他们在优化WAL写入量上做过什么有益的尝试，并且他们使用的PostgreSQL 9.2也是不支持`wal_compression`的，因此可以推断他们PG数据库就一直运行20倍以上WAL写放大的完全未优化状态下。
+去年Uber放出了一篇把PostgreSQL说得一无是处的文章[为什么Uber宣布从PostgreSQL切换到MySQL?](http://www.tuicool.com/articles/Zn2yeuu)给PostgreSQL带来了很大负面影响。Uber文章中提到了PG的几个问题，每一个都被描述成无法逾越的“巨坑”。但实际上这些问题中，除了“写放大”，其它几个问题要么是无关痛痒要么是随着PG的版本升级早就不存在了。至于“写放大”，也是有解的。Uber的文章里没有提到他们在优化WAL写入量上做过什么有益的尝试，并且他们使用的PostgreSQL 9.2也是不支持`wal_compression`的，因此推断他们PG数据库很可能一直运行在20倍以上WAL写放大的完全未优化状态下。
 
 
 ### 参考
