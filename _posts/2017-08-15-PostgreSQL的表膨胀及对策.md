@@ -31,7 +31,8 @@ PostgreSQL的MVCC机制在数据更新时会产生dead元组，这些dead元组�
 
 
 ## 预防表膨胀
-1. 调整autovacuum相关参数，加快垃圾回收速度
+1. 调整autovacuum相关参数，加快垃圾回收速度  
+
 	`autovacuum_vacuum_cost_limit`的默认值过小，尤其在SSD机器上，可以适当调大。
 
 		autovacuum_vacuum_cost_limit = 4000
