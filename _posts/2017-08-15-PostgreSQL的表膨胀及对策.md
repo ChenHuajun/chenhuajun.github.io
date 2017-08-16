@@ -1,4 +1,4 @@
-#PostgreSQL的表膨胀及对策
+# PostgreSQL的表膨胀及对策
 
 PostgreSQL的MVCC机制在数据更新时会产生dead元组，这些dead元组通过后台的autovacuum进程清理。一般情况下autovacuum可以工作的不错，但以下情况下，dead元组可能会不断堆积。
 
@@ -11,21 +11,23 @@ PostgreSQL的MVCC机制在数据更新时会产生dead元组，这些dead元组�
 
 ## 检查表膨胀
 
-方法1：使用`pg_stat_all_tables`系统表
+- 方法1：使用`pg_stat_all_tables`系统表
 
-	SELECT
-	    schemaname||'.'||relname,
-	    n_dead_tup,
-	    n_live_tup,
-	    round(n_dead_tup * 100 / (n_live_tup + n_dead_tup),2) AS dead_tup_ratio
-	FROM
-	    pg_stat_all_tables
-	WHERE
-	    n_dead_tup >= 10000
-	ORDER BY dead_tup_ratio DESC
-	LIMIT 10;
+	从统计信息查出dead元组超过1w的dead元组率top 10的表和索引
 
-方法2:使用`pg_bloat_check`
+		SELECT
+		    schemaname||'.'||relname,
+		    n_dead_tup,
+		    n_live_tup,
+		    round(n_dead_tup * 100 / (n_live_tup + n_dead_tup),2) AS dead_tup_ratio
+		FROM
+		    pg_stat_all_tables
+		WHERE
+		    n_dead_tup >= 10000
+		ORDER BY dead_tup_ratio DESC
+		LIMIT 10;
+
+- 方法2:使用`pg_bloat_check`工具
 
 	`pg_bloat_check`会进行全表扫描，比`pg_stat_all_tables`准确，但比较慢对系统性能冲击也较大，不建议使用。
 
