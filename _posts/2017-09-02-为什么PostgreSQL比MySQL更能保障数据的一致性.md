@@ -35,7 +35,6 @@ PG通过`synchronous_commit`参数设置复制的持久性级别。
 每个级别的含义参考手册:[19.5. 预写式日志](ttp://www.postgres.cn/docs/9.6/runtime-config-wal.html#RUNTIME-CONFIG-WAL-SETTINGS)
 
 MySQL通过半同步复制在很大程度上降低了failover丢失数据的概率。MySQL的主库在等待备库的应答超时时半同步复制会自动降级成异步，此时发生failover会丢失数据。
-MySQL 5.7推出的Group Replication看上去值得期待，但期待归期待，上生产还是要谨慎。还是等别人把坑踩差不多了再作评价吧。
 
 ## 4. 全局唯一的WAL标识
 
@@ -106,8 +105,8 @@ PG在清理不需要的WAL文件时，有2种方式，1是删除，2是改名为
 
 由于有上面的第2项检查，如果读到了这些WAL文件，可以立即识别出来。
 
-[postgres@node1 ~]$ pg_waldump data1/pg_wal/000000030000000000000015
-pg_waldump: FATAL:  could not find a valid record after 0/15000000
+	[postgres@node1 ~]$ pg_waldump data1/pg_wal/000000030000000000000015
+	pg_waldump: FATAL:  could not find a valid record after 0/15000000
 
 
 MySQL的binlog文件名一般是长下面这样的，从binlog文件名上看不出任何和GTID的映射关系。
