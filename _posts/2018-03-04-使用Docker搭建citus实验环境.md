@@ -117,16 +117,18 @@
 	select create_distributed_table('tb1','id');
 	insert into tb1 select id,random()*1000 from generate_series(1,100)id;
 
-postgres=# explain select * from tb1;
-                                  QUERY PLAN                                  
-------------------------------------------------------------------------------
- Custom Scan (Citus Real-Time)  (cost=0.00..0.00 rows=0 width=0)
-   Task Count: 32
-   Tasks Shown: One of 32
-   ->  Task
-         Node: host=cituswk1 port=5432 dbname=postgres
-         ->  Seq Scan on tb1_102008 tb1  (cost=0.00..32.60 rows=2260 width=8)
-(6 rows)
+执行测试SQL
+
+	postgres=# explain select * from tb1;
+	                                  QUERY PLAN                                  
+	------------------------------------------------------------------------------
+	 Custom Scan (Citus Real-Time)  (cost=0.00..0.00 rows=0 width=0)
+	   Task Count: 32
+	   Tasks Shown: One of 32
+	   ->  Task
+	         Node: host=cituswk1 port=5432 dbname=postgres
+	         ->  Seq Scan on tb1_102008 tb1  (cost=0.00..32.60 rows=2260 width=8)
+	(6 rows)
 
 
 
