@@ -168,16 +168,18 @@ AS $citus_move_shard_placement$
         WHERE con in ('citus_move_shard_placement_source_con','citus_move_shard_placement_target_con') ;
 
         PERFORM dblink_connect('citus_move_shard_placement_source_con',
-                                format('host=%s port=%s dbname=%s',
+                                format('host=%s port=%s user=%s dbname=%s',
                                         source_node_name,
                                         source_node_port,
+                                        current_user,
                                         current_database()));
         dblink_created := true;
 
         PERFORM dblink_connect('citus_move_shard_placement_target_con',
-                                format('host=%s port=%s dbname=%s',
+                                format('host=%s port=%s user=%s dbname=%s',
                                         target_node_name,
                                         target_node_port,
+                                        current_user,
                                         current_database()));
 
         BEGIN
@@ -206,12 +208,16 @@ AS $citus_move_shard_placement$
 
     -- create shard table in the target node
             RAISE  NOTICE  'create shard table in the target node %:%', target_node_name, target_node_port;
-            EXECUTE format($$COPY (select '') to PROGRAM 'pg_dump -h %s -p %s -s -t %s | psql -h %s -p %s'$$,
+            EXECUTE format($$COPY (select '') to PROGRAM 'pg_dump "host=%s port=%s user=%s dbname=%s" -s -t %s | psql "host=%s port=%s user=%s dbname=%s"'$$,
                             source_node_name,
                             source_node_port,
+                            current_user,
+                            current_database(),
                             (select string_agg(table_name,' -t') from unnest(shard_fulltablename_array) table_name),
                             target_node_name,
-                            target_node_port);
+                            target_node_port,
+                            current_user,
+                            current_database());
 
             SELECT table_name
             INTO   target_shard_tables_with_data
@@ -239,10 +245,12 @@ AS $citus_move_shard_placement$
                                 $$);
             PERFORM dblink_exec('citus_move_shard_placement_target_con', 
                                 format($$CREATE SUBSCRIPTION citus_move_shard_placement_sub
-                                             CONNECTION 'host=%s port=%s'
+                                             CONNECTION 'host=%s port=%s user=%s dbname=%s'
                                              PUBLICATION citus_move_shard_placement_pub$$,
                                              source_node_name,
-                                             source_node_port));
+                                             source_node_port,
+                                             current_user,
+                                             current_database()));
             sub_created := true;
 
     -- wait shard data init sync
