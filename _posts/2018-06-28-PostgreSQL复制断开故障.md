@@ -15,7 +15,16 @@ PostgreSQL导入大量数据时，导致备机复制断开
 
 ## 如何处理？
 
-把pg_wal中的WAL清空，再重启备机
+把`pg_wal`中当前正在恢复的WAL删除，再重启备机。PG重启后遇到缺失的WAL会进入流复制模式从主节点上获取WAL。​
+
+示例:
+
+	$ ps -ef|grep recovering
+	postgres  2014  2012  0 17:00 ?        00:00:00 postgres: startup process   recovering 000000010000000000000056
+	
+	pg_ctl stop
+	mv 000000010000000000000056 /tmp/
+	pg_ctl start
 
 
 ## 参考
