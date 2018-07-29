@@ -346,7 +346,7 @@
 
 ## 6.1 参考
 - https://yq.aliyun.com/articles/71128
-- PostgreSQL(Logical-Replication-Internals).pdf
+- [PostgreSQL(Logical-Replication-Internals).pdf](2018-07-30/PostgreSQL(Logical-Replication-Internals).pdf)
 - http://www.postgres.cn/docs/10/logical-replication.html
 
 
