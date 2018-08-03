@@ -44,8 +44,8 @@ AS $citus_move_shard_placement$
         shard_id_array bigint[];
         shard_fulltablename_array text[];
         tmp_shard_id bigint;
-        replication_lag_check_id integer;
         sub_lag interval;
+        sub_rel_count_srsubid bigint;
         error_msg text;
         pub_created boolean := false;
         sub_created boolean := false;
@@ -186,16 +186,7 @@ AS $citus_move_shard_placement$
     -- CREATE PUBLICATION in source node
             RAISE  NOTICE  'CREATE PUBLICATION in source node %:%', source_node_name, source_node_port;
             PERFORM dblink_exec('citus_move_shard_placement_source_con', 
-                                $$DROP TABLE IF EXISTS citus.citus_move_shard_placement_replication_lag_check
-                                $$);
-            PERFORM dblink_exec('citus_move_shard_placement_source_con', 
-                                $$CREATE TABLE citus.citus_move_shard_placement_replication_lag_check(
-                                    id serial primary key,
-                                    optime timestamptz NOT NULL)
-                                $$);
-            PERFORM dblink_exec('citus_move_shard_placement_source_con', 
-                                format('CREATE PUBLICATION citus_move_shard_placement_pub 
-                                            FOR TABLE citus.citus_move_shard_placement_replication_lag_check, %s',
+                                format('CREATE PUBLICATION citus_move_shard_placement_pub FOR TABLE %s',
                                          (select string_agg(table_name,',') from unnest(shard_fulltablename_array) table_name)));
             pub_created := true;
 
@@ -236,14 +227,6 @@ AS $citus_move_shard_placement$
     -- CREATE SUBSCRIPTION on target node
             RAISE  NOTICE  'CREATE SUBSCRIPTION on target node %:%', target_node_name, target_node_port;
             PERFORM dblink_exec('citus_move_shard_placement_target_con', 
-                                $$DROP TABLE IF EXISTS citus.citus_move_shard_placement_replication_lag_check
-                                $$);
-            PERFORM dblink_exec('citus_move_shard_placement_target_con', 
-                                $$CREATE TABLE citus.citus_move_shard_placement_replication_lag_check(
-                                    id serial primary key,
-                                    optime timestamptz NOT NULL)
-                                $$);
-            PERFORM dblink_exec('citus_move_shard_placement_target_con', 
                                 format($$CREATE SUBSCRIPTION citus_move_shard_placement_sub
                                              CONNECTION 'host=%s port=%s user=%s dbname=%s'
                                              PUBLICATION citus_move_shard_placement_pub$$,
@@ -255,25 +238,17 @@ AS $citus_move_shard_placement$
 
     -- wait shard data init sync
             RAISE  NOTICE  'wait for init data sync...';
-            SELECT id 
-            INTO STRICT replication_lag_check_id
-            FROM dblink('citus_move_shard_placement_source_con', 
-                        format($$INSERT INTO citus.citus_move_shard_placement_replication_lag_check(optime)
-                                 VALUES('%s') RETURNING id$$,
-                                 clock_timestamp())
-                        ) AS t(id integer);
-
             LOOP
-                SELECT clock_timestamp() - optime 
-                INTO sub_lag
-                FROM dblink('citus_move_shard_placement_target_con', 
-                                    format($$select optime 
-                                             FROM citus.citus_move_shard_placement_replication_lag_check
-                                             WHERE id = %s$$,
-                                             replication_lag_check_id)
-                              ) AS t(optime timestamptz);
+                SELECT count_srsubid
+                INTO STRICT sub_rel_count_srsubid
+                FROM dblink('citus_move_shard_placement_target_con',
+                                    $$SELECT count(srsubid) count_srsubid from pg_subscription, pg_subscription_rel
+                                      WHERE pg_subscription.oid=pg_subscription_rel.srsubid            AND
+                                            pg_subscription.subname = 'citus_move_shard_placement_sub' AND
+                                            (pg_subscription_rel.srsubstate = 's' OR pg_subscription_rel.srsubstate = 'r')$$
+                              ) AS t(count_srsubid int);
 
-                IF sub_lag IS NOT NULL THEN
+                IF sub_rel_count_srsubid = colocated_table_count THEN
                     EXIT;
                 ELSE
                     PERFORM pg_sleep(1);
@@ -303,26 +278,25 @@ AS $citus_move_shard_placement$
             END LOOP;
 
     -- wait shard data sync
-            RAISE  NOTICE  'wait for data sync...';
-            SELECT id 
-            INTO STRICT replication_lag_check_id
+            SELECT sourcewallsn 
+            INTO STRICT source_wal_lsn
             FROM dblink('citus_move_shard_placement_source_con', 
-                        format($$INSERT INTO citus.citus_move_shard_placement_replication_lag_check(optime)
-                                 VALUES('%s') RETURNING id$$,
-                                 clock_timestamp())
-                        ) AS t(id integer);
+                                $$select pg_current_wal_insert_lsn()$$
+                          ) AS t(sourcewallsn pg_lsn);
+
+            RAISE  NOTICE  'wait for data sync...';
 
             LOOP
-                SELECT clock_timestamp() - optime 
-                INTO sub_lag
+                SELECT lag 
+                INTO STRICT sub_lag
                 FROM dblink('citus_move_shard_placement_target_con', 
-                                    format($$select optime 
-                                             FROM citus.citus_move_shard_placement_replication_lag_check
-                                             WHERE id = %s$$,
-                                             replication_lag_check_id)
-                              ) AS t(optime timestamptz);
+                                    format($$select pg_wal_lsn_diff('%s',latest_end_lsn) 
+                                             FROM pg_stat_subscription
+                                             WHERE subname = 'citus_move_shard_placement_sub' AND latest_end_lsn is not NULL$$,
+                                             source_wal_lsn::text)
+                              ) AS t(lag numeric);
 
-                IF sub_lag IS NOT NULL THEN
+                IF sub_lag <= 0 THEN
                     EXIT;
                 ELSE
                     PERFORM pg_sleep(1);
