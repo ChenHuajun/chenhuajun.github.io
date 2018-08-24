@@ -44,8 +44,9 @@ AS $citus_move_shard_placement$
         shard_id_array bigint[];
         shard_fulltablename_array text[];
         tmp_shard_id bigint;
-        sub_lag interval;
+        source_wal_lsn pg_lsn;
         sub_rel_count_srsubid bigint;
+        sub_lag numeric;
         error_msg text;
         pub_created boolean := false;
         sub_created boolean := false;
@@ -128,7 +129,7 @@ AS $citus_move_shard_placement$
 
         IF source_active_shard_id_array is NULL THEN
             RAISE  'shard % in source node do not exist or invalid', shard_id_array;
-        ELSIF source_active_shard_id_array <> shard_id_array THEN
+        ELSIF NOT (source_active_shard_id_array @> shard_id_array AND source_active_shard_id_array <@ shard_id_array) THEN
             SELECT string_agg(shardid::text,',')
             INTO   STRICT  source_bad_shards_string
             FROM   unnest(shard_id_array) t(shardid)
@@ -254,7 +255,6 @@ AS $citus_move_shard_placement$
                     PERFORM pg_sleep(1);
                 END IF;
             END LOOP;
-            RAISE  NOTICE  'init data sync in %', sub_lag;
 
     --  lock tables from executing SQL
             FOR i IN 1..colocated_table_count LOOP
@@ -302,7 +302,6 @@ AS $citus_move_shard_placement$
                     PERFORM pg_sleep(1);
                 END IF;
             END LOOP;
-            RAISE  NOTICE  'data sync in %', sub_lag;
 
     -- UPDATE pg_dist_placement
             RAISE  NOTICE  'UPDATE pg_dist_placement';
