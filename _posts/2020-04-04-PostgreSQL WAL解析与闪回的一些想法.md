@@ -162,6 +162,7 @@ binlog2sql已经有很多生产部署的案例，但是walminer好像还没有�
 
 ## 6. 参考
 
+- [不同数据库间的闪回方案对比](https://www.modb.pro/db/22169)
 - [PostgreSQL Oracle 兼容性之 - 事件触发器实现类似Oracle的回收站功能](https://github.com/digoal/blog/blob/master/201504/20150429_01.md?spm=a2c4e.10696291.0.0.5d3119a4ZrkOdK&file=20150429_01.md)
 - [PostgreSQL flashback(闪回) 功能实现与介绍](https://yq.aliyun.com/articles/228267)
 - [MySQL Flashback 工具介绍](https://www.cnblogs.com/DataArt/p/9873365.html)
