@@ -157,7 +157,7 @@ binlog2sql已经有很多生产部署的案例，但是walminer好像还没有�
     既然这个工具的功能是从WAL中解析出原始SQL和undo SQL，walminer这个名称就显得不合适了。
     因为从字面上理解，walminer应该是解析WAL本身包含的信息，包括很多与SQL无关的的信息，
     但是不应该包含undo SQL这种WAL里没有而完全是被构造出来的东西。
-    所以，顾名思议，这个东西可以叫wal2sql。
+    所以，既然聚焦的功能是从WAL中提取SQL，这个东西可以叫wal2sql。就像MySQL的binlog2sql一样更加直观。
     
 
 ## 6. 参考
