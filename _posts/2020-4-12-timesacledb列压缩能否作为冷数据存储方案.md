@@ -1,3 +1,5 @@
+# timesacledb列压缩能否作为冷数据存储方案
+
 ## 背景
 
 PostgreSQL不支持块压缩，对数据库中积累的大量访问频度低的冷数据，能否借助第3方插件实现压缩存储呢？
@@ -340,6 +342,8 @@ postgres=# select device_id,_ts_meta_count,_ts_meta_sequence_num,_ts_meta_min_1,
 
 列存储适合分析类查询，对于小范围的数据抓取，只能保障一个维度上的效率。
 对hbase这个维度就是rowkey，对timescaledb则是分段字段+排序字段。
+
+因此使用timescaledb类压缩作为冷数据存储方案，必须考虑到这些访问限制，并合理选择时间字段，附加分区字段，分段字段和排序字段。
 
 
 ## 参考
