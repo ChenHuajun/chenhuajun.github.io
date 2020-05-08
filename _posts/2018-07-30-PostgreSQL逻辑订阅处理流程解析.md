@@ -27,12 +27,12 @@
    - 7.2 设置表同步状态为's'(`SUBREL_STATE_SYNCDONE`)
    - 7.3 进程退出
 8. logial replication apply worker进程继续接受订阅消息并处理
-   - 8.1 接受到insert,update和delete消息，如果是同步点(进入's'或'r'状态时的lsn位置)之后的消息进行应用。
+   - 8.1 接受到insert,update和delete消息，如果是'r'状态或's'状态且为pg_subscription_rel.srsublsn(进入's'状态时的lsn位置)之后的消息进行应用。
    - 8.2 接受到commit消息
        - 8.2.1 更新复制源状态，确保apply worker crash时可以找到正确的开始位置
        - 8.2.2 提交事务
        - 8.2.3 更新统计信息
-       - 8.2.4 将所有处于's'(`SUBREL_STATE_SYNCDONE`)同步状态的表更新为'r'(`SUBREL_STATE_READY`)
+       - 8.2.4 如果本commit消息的位置已经等于超过srsublsn，将处于's'(`SUBREL_STATE_SYNCDONE`)同步状态的表更新为'r'(`SUBREL_STATE_READY`)
    - 8.3 暂时没有新的消息处理
        - 8.3.1 向发布端发送订阅位置反馈
        - 8.3.2 如果不在事务块里，同步表状态。将所有处于's'(`SUBREL_STATE_SYNCDONE`)同步状态的表更新为'r'(`SUBREL_STATE_READY`)
@@ -40,7 +40,7 @@
 
 ## 2. 表同步后的持续逻辑复制
 
-订阅表进入同步状态(状态码是‘s’或'r')后，发布端的变更都会通过消息通知订阅端；
+订阅表进入同步状态(状态码是's'或'r')后，发布端的变更都会通过消息通知订阅端；
 订阅端apply worker按照订阅消息的接受顺序(即发布端事务提交顺序)对每个表apply变更，并反馈apply位置，用于监视复制延迟。
 
 通过调试，确认发布端发生更新时，发送给订阅端的数据包。

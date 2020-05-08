@@ -23,9 +23,15 @@ postgres=# select * from pg_subscription_rel;
 - srsublsn
   s和r状态时源端的结束LSN。
 
-初始时，PG从发布端copy基表，此时该表处于i和d状态，基表拷贝完成后记录LSN位置到srsublsn。
-之后进入s或r状态，并通过pgoutput逻辑解码从发布端拉取并应用增量数据。
+初始时该表处于i状态，而后PG从发布端copy基表，此时该表处于d状态，基表拷贝完成后记录LSN位置到srsublsn。
+之后进入s状态最后再进入r状态，并通过pgoutput逻辑解码从发布端拉取并应用增量数据。
 
+s状态和r状态的区别是什么？
+初始拷贝完成后，每个表的sync worker还需要从发布端拉取增量，直到增量部分追到大于等于apply worker的同步位置。
+当追上apply worker的同步位置后表变更为s状态，并记录此时的wal位置到`pg_subscription_rel.srsublsn`。
+
+此时srsublsn可能已经到了apply worker同步的前面，所有在commit wal位置小于srsublsn的事务都需要应用。
+一旦apply worker追上srsublsn，设置该表为r状态，此时所有订阅范围的表更新事务都需要apply worker应用。
 
 ### `pg_stat_subscription`
 
@@ -33,7 +39,7 @@ postgres=# select * from pg_subscription_rel;
 还有一个或多个进行初始同步的sync worker。
 sync worker上的relid指示正在初始同步的表；对于apply worker，relid为NULL。
 
-apply worker的`latest_end_lsn`反映了已完成同步的LSN位置，即最后一条被应用（或被跳过）的WAL记录的结束位置。
+apply worker的`latest_end_lsn`为已反馈给发布端的LSN位置，一定程度上也可以认为是已完成同步的LSN位置。
 
 ```
 postgres=# select * from pg_stat_subscription;
@@ -95,8 +101,6 @@ confirmed_flush_lsn | 0/4540850
 `confirmed_flush_lsn`是最后一个已同步的WAL记录的结束位置(需要字节对齐，实际是下条WAL的起始位置)。
 `restart_lsn`有时候是最后一个已同步的WAL记录的起始位置。
 
-`confirmed_flush_lsn`等同于订阅端`pg_stat_subscription`的`latest_end_lsn`。
-
 对应订阅范围内的表的更新WAL记录，必须订阅端执行完这条记录才能算已同步；对其他无关的WAL，直接认为是已同步的，继续处理下一条WAL。
 
 在下面的例子中，我们在订阅端锁住一个订阅表，导致订阅端无法应用这条INSERT WAL，所有`confirmed_flush_lsn`就暂停在这条WAL前面(0/4540850)。
@@ -145,14 +149,14 @@ sync worker初始同步一张表时，分下面几个步骤
 
 ## 如何判断订阅已经同步?
 
-在所有表都处于s或r状态时，只要订阅端的`latest_end_lsn`追上发布端的当前lsn即可。
+在所有表都处于s或r状态时，只要发布端的`pg_stat_replication.replay_lsn`追上发布端的当前lsn即可。
 
 如果我们通过逻辑订阅进行数据表切换，可以执行以下步骤确保数据同步
 1. 创建订阅并等待所有表完成基本同步
     即所有表在`pg_subscription_rel`中处于s或r状态
 2. 在发布端锁表禁止更新
 3. 获取发布端当前lsn
-4. 获取订阅端的`latest_end_lsn`(或发布端的其他等价指标)，如果超过3的lsn，则数据已同步。
+4. 获取发布端的`replay_lsn`(或其他等价指标)，如果超过3的lsn，则数据已同步。
 5. 如果尚未同步，重复4
 
 
