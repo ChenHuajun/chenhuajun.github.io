@@ -82,20 +82,31 @@ PG 主备切换后，访问数据库的客户端也要相应地连接到新的�
 
 - 应用连接Citus
   - 客户端多主机URL
+
+    如果驱动支持，特别对Java应用，推荐采用客户端多主机URL访问Citus
+
   - VIP
 - Citus CN连接Worker
   - VIP
-  - worker节点发生切换时动态修改Citus CN上的worker节点元数据
+  - Worker节点发生切换时动态修改Citus CN上的worker节点元数据
 
 
 
-在条件许可的情况下，推荐采用客户端多主机URL访问Citus，但考虑到有些开发语言的驱动不支持多主机URL，因此本文演示的方案如下
+关于Citus CN连接Worker的方式，本文下面的实验中会演示2种场景，采用不同的实现方式。
 
-- 客户端通过VIP连接Citus CN
-  - 通过patroni回调动态配置读写VIP
-  - 通过keepalived配置只读VIP
+**普通场景**
 
-- worker节点发生切换时动态修改Citus CN上的worker节点元数据
+- CN通过Worker的实际IP连接Worekr主节点
+- CN上通过监控脚本检测Worker节点状态，Worker发生主备切换时动态修改Citus CN上的元数据
+
+​	
+
+**读写分离场景**
+
+- CN通过Worker的读写VIP和只读VIP连接Worekr
+- CN上通过Patroni回调动态控制CN主节点使用读写VIP，CN备节点使用只读VIP
+- Worker上通过Patroni回调动态配置读写VIP
+- Worker上通过keepalived动态配置只读VIP
 
 
 
@@ -213,7 +224,7 @@ systemctl enable etcd
 ```
 yum install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-7-x86_64/pgdg-redhat-repo-latest.noarch.rpm
 
-yum install -y postgresql12-server postgresql-contrib
+yum install -y postgresql12-server postgresql12-contrib
 yum install -y citus_12
 ```
 
@@ -633,7 +644,7 @@ if __name__ == '__main__':
 
 
 
-再cn主备节点上都启动worker流量自动切换脚本
+在cn主备节点上都启动worker流量自动切换脚本
 
 ```
 su - postgres
@@ -651,9 +662,9 @@ Citus有读写分离功能，可以把一个worker的主备节点作为2个worke
 
 解决办法有2个
 
-方法1：Citus元数据中只写固定的主机名，比如wk1，wk2...，然后通过自定义的worker流量自动切换脚本将这个固定的主机名解析成不同的IP地址写入到`/etc/hosts`里，也就是在CN主库上解析成Worker主库的IP，在CN备库上解析成Worker备库的IP。
+**方法1**：Citus元数据中只写固定的主机名，比如wk1，wk2...，然后通过自定义的worker流量自动切换脚本将这个固定的主机名解析成不同的IP地址写入到`/etc/hosts`里，也就是在CN主库上解析成Worker主库的IP，在CN备库上解析成Worker备库的IP。
 
-方法2：在Worker上动态绑定读写VIP和只读VIP。在Citus元数据中读写VIP作为primary角色的Worker，只读VIP作为secondary角色的Worker。
+**方法2**：在Worker上动态绑定读写VIP和只读VIP。在Citus元数据中读写VIP作为primary角色的Worker，只读VIP作为secondary角色的Worker。
 
 
 
