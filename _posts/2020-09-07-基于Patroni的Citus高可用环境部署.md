@@ -836,8 +836,8 @@ Sep  7 02:27:17 node1 postgres: switch_use_secondary_nodes: alter use_secondary_
 
 ### 8. 参考
 
-- 基于Patroni的PostgreSQL高可用环境部署.md
-- 《基于*Patroni*的*Citus*高可用方案》
+- [基于Patroni的PostgreSQL高可用环境部署.md](https://github.com/ChenHuajun/chenhuajun.github.io/blob/master/_posts/2020-09-07-基于Patroni的PostgreSQL高可用环境部署.md)
+- 《基于*Patroni*的*Citus*高可用方案》（PostgreSQL中国用户大会2019分享主题）
 - https://patroni.readthedocs.io/en/latest/
 - http://blogs.sungeek.net/unixwiz/2018/09/02/centos-7-postgresql-10-patroni/
 - https://scalegrid.io/blog/managing-high-availability-in-postgresql-part-1/
