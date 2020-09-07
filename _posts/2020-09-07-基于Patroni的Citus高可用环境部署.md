@@ -2,7 +2,7 @@
 
 ## 1. 前言
 
-Citus是一个非常实用的能够对PostgreSQL进行水平扩展的解决方案，或者说是一款基于PostgreSQL的分布式HTAP数据库。本文简单说明Citus HA的技术方案，并实际演示一下搭建Citus HA环境的步骤。
+Citus是一个非常实用的能够对PostgreSQL进行水平扩展的解决方案，或者说是一款基于PostgreSQL的分布式HTAP数据库。本文简单说明Citus的高可用技术方案，并实际演示一下搭建Citus HA环境的步骤。
 
 
 
@@ -12,13 +12,13 @@ Citus是一个非常实用的能够对PostgreSQL进行水平扩展的解决方�
 
 Citus集群由一个CN节点和N个Worker节点组成。CN节点的高可用可以使用任何通用的PG 高可用方案，即为CN节点通过流复制配置主备2台PG机器；Worker节点的高可用除了可以像CN一样采用PG原生的高可用方案，还支持另一种多副本分片的高可用方案。
 
-多副本高可用方案是Citus早期版本默认的worker高可用方案（当时`shard_count`默认值为2），这种方案部署非常简单，而且坏一个worker节点也不影响业务。在多副本高可用中，每次写入数据时，CN节点需要在2个worker上分别写数据，这也带来一系列不利的地方。
+多副本高可用方案是Citus早期版本默认的Worker高可用方案（当时`citus.shard_count`默认值为2），这种方案部署非常简单，而且坏一个Worker节点也不影响业务。在多副本高可用中，每次写入数据时，CN节点需要在2个Worker上分别写数据，这也带来一系列不利的地方。
 
 1. 数据写入的性能下降
 2. 对多个副本的数据一致性的保障也没有PG原生的流复制强
 3. 存在功能上的限制，比如不支持Citus MX架构
 
-因此，Citus的多副本高可用方案适用场景有限，Citus 官方文档上也说可能它只适用于append only的业务场景,不作为推荐的高可用方案了(在Citus 6.1的时候，`shard_count`默认值从2改成了1)。
+因此，Citus的多副本高可用方案适用场景有限，Citus 官方文档上也说可能它只适用于append only的业务场景,不作为推荐的高可用方案了(在Citus 6.1的时候，`citus.shard_count`默认值从2改成了1)。
 
 
 
@@ -38,9 +38,9 @@ PG本身提供的流复制的HA的部署和维护都不算很复杂，但是如�
 
 
 
-其中patroni采用DCS存储元数据，能够严格的保障元数据的一致性，可靠性高；而且它的功能也比较强大。
+其中Patroni采用DCS(Distributed Configuration Store，比如etcd，ZooKeeper，Consul等)存储元数据，能够严格的保障元数据的一致性，可靠性高；而且它的功能也比较强大。
 
-因此个人推荐使用patroni（只有2台机器无法部署etcd的情况可以考虑其它方案）。本文也基于patroni演示Citus高可用的部署。
+因此个人推荐使用Patroni（只有2台机器无法部署etcd的情况可以考虑其它方案）。本文介绍基于Patroni的PostgreSQL高可用的部署。 
 
 
 
@@ -48,15 +48,15 @@ PG本身提供的流复制的HA的部署和维护都不算很复杂，但是如�
 
 PG 主备切换后，访问数据库的客户端也要相应地连接到新的主库。目前常见的有下面几种方案：
 
-- HA Proxy
+- HAProxy
 
   - 优点
     - 可靠
     - 支持负载均衡
 
    - 缺点
-     	- 性能损耗
-        	- haproxy自身的HA
+      - 性能损耗
+      - 需要配置haproxy自身的HA
 
 - VIP
 
@@ -78,12 +78,12 @@ PG 主备切换后，访问数据库的客户端也要相应地连接到新的�
 
   
 
-对于Citus集群情况稍有不同，推荐的候选方案如下
+根据Citus集群的特点，推荐的候选方案如下
 
 - 应用连接Citus
   - 客户端多主机URL
 
-    如果驱动支持，特别对Java应用，推荐采用客户端多主机URL访问Citus
+    如果客户端驱动支持，特别对Java应用，推荐采用客户端多主机URL访问Citus
 
   - VIP
 - Citus CN连接Worker
@@ -92,21 +92,21 @@ PG 主备切换后，访问数据库的客户端也要相应地连接到新的�
 
 
 
-关于Citus CN连接Worker的方式，本文下面的实验中会演示2种场景，采用不同的实现方式。
+关于Citus CN连接Worker的方式，本文下面的实验中会演示2种架构，采用不同的实现方式。
 
-**普通场景**
+**普通架构**
 
 - CN通过Worker的实际IP连接Worekr主节点
 - CN上通过监控脚本检测Worker节点状态，Worker发生主备切换时动态修改Citus CN上的元数据
 
 ​	
 
-**读写分离场景**
+**支持读写分离的架构**
 
 - CN通过Worker的读写VIP和只读VIP连接Worekr
-- CN上通过Patroni回调动态控制CN主节点使用读写VIP，CN备节点使用只读VIP
-- Worker上通过Patroni回调动态配置读写VIP
-- Worker上通过keepalived动态配置只读VIP
+- CN上通过Patroni回调脚本动态控制CN主节点使用读写VIP，CN备节点使用只读VIP
+- Worker上通过Patroni回调脚本动态绑定读写VIP
+- Worker上通过keepalived动态绑定只读VIP
 
 
 
@@ -122,7 +122,7 @@ PG 主备切换后，访问数据库的客户端也要相应地连接到新的�
 
 
 
-**机器和vip资源**
+**机器和VIP资源**
 
 - Citus CN
   - node1：192.168.234.201 
@@ -150,7 +150,7 @@ ntpdate time.windows.com && hwclock -w
 如果使用防火墙需要开放postgres，etcd和patroni的端口。
 
 - postgres:5432
-- patroni:8000
+- patroni:8008
 - etcd:2379/2380
 
 更简单的做法是将防火墙关闭
@@ -230,7 +230,7 @@ yum install -y citus_12
 
 
 
-安装patroni 
+安装Patroni 
 
 ```
 yum install -y gcc epel-release
@@ -253,7 +253,7 @@ chmod -R 700 /pgsql/data
 
 
 
-创建partoni service配置文件`/etc/systemd/system/patroni.service`
+创建Partoni service配置文件`/etc/systemd/system/patroni.service`
 
 ```
 [Unit]
@@ -275,7 +275,7 @@ WantedBy=multi-user.targ
 
 
 
-创建patroni配置文件`/etc/patroni.yml`,以下是node1的配置示例
+创建Patroni配置文件`/etc/patroni.yml`,以下是node1的配置示例
 
 ```
 scope: cn
@@ -283,8 +283,8 @@ namespace: /service/
 name: pg1
 
 restapi:
-  listen: 0.0.0.0:8000
-  connect_address: 192.168.234.201:8000
+  listen: 0.0.0.0:8008
+  connect_address: 192.168.234.201:8008
 
 etcd:
   host: 192.168.234.204:2379
@@ -353,22 +353,22 @@ tags:
   - node3，node4设置为wk1
 - name
   - node1~node4分别设置pg1~pg4
-- restapi->connect_address
+- restapi.connect_address
   - 根据各自节点IP设置
-- postgresql->connect_address
+- postgresql.connect_address
   - 根据各自节点IP设置
 
 
 
-启动patroni
+启动Patroni
 
-在所有节点上启动patroni。
+在所有节点上启动Patroni。
 
 ```
 systemctl start patroni
 ```
 
-同一个cluster中，第一次启动的patroni实例会作为leader运行，并初始创建PostgreSQL实例和用户。后续节点初次启动时从leader节点克隆数据
+同一个cluster中，第一次启动的Patroni实例会作为leader运行，并初始创建PostgreSQL实例和用户。后续节点初次启动时从leader节点克隆数据
 
 
 
@@ -463,9 +463,9 @@ select create_distributed_table('tb1','id');
 
 ## 6. 配置Worker的自动流量切换
 
-上面配置的Worker IP是当时的Worker主节点IP，在Worker发生主备切换后，这个IP将失效。
+上面配置的Worker IP是当时的Worker主节点IP，在Worker发生主备切换后，需要相应更新这个IP。
 
-因此，需要通过脚本监视worker主备状态，当worker主备角色更新时，自动更新Citus上的worker元数据为新主节点的IP。下面是脚本的参考实现
+实现上，可以通过脚本监视Worker主备状态，当Worker主备角色变更时，自动更新Citus上的Worker元数据为新主节点的IP。下面是脚本的参考实现
 
 
 
@@ -644,7 +644,7 @@ if __name__ == '__main__':
 
 
 
-在cn主备节点上都启动worker流量自动切换脚本
+在cn主备节点上都启动Worker流量自动切换脚本
 
 ```
 su - postgres
@@ -656,27 +656,27 @@ python citus_controller.py -c citus_controller.yml
 
 ## 7. 读写分离
 
-根据上面的配置，Citus CN不会访问Worker的备机，这些备机闲着也是闲着，能否让Citus CN支持读写分离呢？也就是让CN的备机优先访问Worker的备机，Worker备节故障时访问Worker的主机。
+根据上面的配置，Citus CN不会访问Worker的备机，这些备机闲着也是闲着，能否把这些备节用起来，让Citus CN支持读写分离呢？具体而言就是让CN的备机优先访问Worker的备机，Worker备节故障时访问Worker的主机。
 
-Citus有读写分离功能，可以把一个worker的主备节点作为2个worker项目分别以`primary`和`secondary`的角色加入到同一个group里。但是，由于Citus的pg_dist_node元数据中要求nodename:nodeport必须唯一，所以前面的动态修改Citus元数据中的worker IP的方式无法同时支持primary节点和secondary节点的动态更新。
+Citus本身支持读写分离功能，可以把一个Worker的主备2个节点作为2个”worker"分别以`primary`和`secondary`的角色加入到同一个worker group里。但是，由于Citus的`pg_dist_node`元数据中要求nodename:nodeport必须唯一，所以前面的动态修改Citus元数据中的worker IP的方式无法同时支持primary节点和secondary节点的动态更新。
 
 解决办法有2个
 
-**方法1**：Citus元数据中只写固定的主机名，比如wk1，wk2...，然后通过自定义的worker流量自动切换脚本将这个固定的主机名解析成不同的IP地址写入到`/etc/hosts`里，也就是在CN主库上解析成Worker主库的IP，在CN备库上解析成Worker备库的IP。
+**方法1**：Citus元数据中只写固定的主机名，比如wk1，wk2...，然后通过自定义的Worker流量自动切换脚本将这个固定的主机名解析成不同的IP地址写入到`/etc/hosts`里，在CN主库上解析成Worker主库的IP，在CN备库上解析成Worker备库的IP。
 
-**方法2**：在Worker上动态绑定读写VIP和只读VIP。在Citus元数据中读写VIP作为primary角色的Worker，只读VIP作为secondary角色的Worker。
-
-
-
-patroni动态绑VIP的方法参考`基于patroni搭建PostgreSQL HA集群.md`
-
-对Citus worker，读写VIP通过callback脚本动态绑定；只读VIP通过keepalived动态绑定。
+**方法2**：在Worker上动态绑定读写VIP和只读VIP。在Citus元数据中读写VIP作为primary角色的worker，只读VIP作为secondary角色的worker。
 
 
 
-采用这种方式时，创建Citus集群时，就需要把Worker的VIP加入集群。
+Patroni动态绑VIP的方法参考[基于Patroni的PostgreSQL高可用环境部署.md](https://github.com/ChenHuajun/chenhuajun.github.io/blob/master/_posts/2020-09-07-基于Patroni的PostgreSQL高可用环境部署.md)，对Citus Worker，读写VIP通过回调脚本动态绑定；只读VIP通过keepalived动态绑定。
 
-在cn的主节点上，添加wk1的读写VIP(192.168.234.210)和只读VIP（192.168.234.211），groupid设置为1。
+
+
+下面按方法2进行配置。
+
+
+
+创建Citus集群时，在CN的主节点上，添加wk1的读写VIP(192.168.234.210)和只读VIP（192.168.234.211），分别作为`primary` worker和`secondary` worker，groupid设置为1。
 
 ```
 SELECT * from master_add_node('192.168.234.210', 5432, 1, 'primary');
@@ -685,7 +685,7 @@ SELECT * from master_add_node('192.168.234.211', 5432, 1, 'secondary');
 
 
 
-在cn的主备节点上，创建`~postgres/.pgpass` 文件，支持CN免密连接Worker。
+在CN的主备节点上，创建`~postgres/.pgpass` 文件，支持CN免密连接Worker。
 
 ```
 #hostname:port:database:username:password
@@ -740,7 +740,7 @@ postgres=# explain select * from tb1;
 
 
 
-由于CN也会发生主备切换，上面这个参数必须动态调节。这可以使用patroni的回调脚本实现
+由于CN也会发生主备切换，``citus.use_secondary_nodes`参数必须动态调节。这可以使用Patroni的回调脚本实现
 
 
 
@@ -808,7 +808,7 @@ esac
 
 
 
-修改patroni配置文件`/etc/patroni.yml`，配置回调函数
+修改Patroni配置文件`/etc/patroni.yml`，配置回调函数
 
 ```
 postgresql:
@@ -821,13 +821,13 @@ postgresql:
 
 ```
 
-所有节点的patroni配置文件都修改后，重新加载patroni配置
+所有节点的Patroni配置文件都修改后，重新加载Patroni配置
 
 ```
 patronictl reload pgsql
 ```
 
-cn上执行switchover后，可以看到`use_secondary_nodes`发生了切换
+CN上执行switchover后，可以看到`use_secondary_nodes`参数发生了修改
 
 /var/log/messages:
 
