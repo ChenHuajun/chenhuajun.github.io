@@ -253,7 +253,7 @@ chmod -R 700 /pgsql/data
 
 
 
-创建Partoni service配置文件`/etc/systemd/system/patroni.service`
+创建Partoni的service配置文件`/etc/systemd/system/patroni.service`
 
 ```
 [Unit]
@@ -312,7 +312,7 @@ bootstrap:
         max_connections: "100"
         max_prepared_transactions: "100"
         shared_preload_libraries: "citus"
-        citus.node_conninfo="sslmode=prefer"
+        citus.node_conninfo: "sslmode: prefer"
         citus.replication_model: streaming
         citus.task_assignment_policy: round-robin
 
@@ -469,16 +469,9 @@ select create_distributed_table('tb1','id');
 
 
 
-创建配置文件`/pgsql/citus_controller.yml`
+将以下配置添加到Citus CN主备节点的`/etc/patroni.yml`里
 
 ```
-postgresql:
-  connect_address: 192.168.234.202:5432
-  authentication:
-    superuser:
-      username: postgres
-      password: "123456"
-
 citus:
   loop_wait: 10
   databases:
@@ -491,7 +484,18 @@ citus:
     - 192.168.234.204:5432
 ```
 
-上面的`citus`节点也可以添加到'/etc/patroni.yml'里，这样可以共用部分配置。
+
+
+也可以使用独立的配置文件，如果那样做需要补充认证配置
+
+```
+postgresql:
+  connect_address: 192.168.234.202:5432
+  authentication:
+    superuser:
+      username: postgres
+      password: "123456"
+```
 
 
 
@@ -581,7 +585,6 @@ def main():
     password = config['postgresql']['authentication']['superuser']['password']
     databases = config['citus']['databases']
     workers = config['citus']['workers']
-    dbname = databases[0]
 
     loop_wait = config['citus'].get('loop_wait',10)
  
@@ -591,6 +594,7 @@ def main():
         loop_count += 1
         logging.debug("##### main loop start [{}] #####".format(loop_count))
 
+        dbname = databases[0]
         cn_url = "postgres://{0}/{1}?user={2}&password={3}".format(
                                     cn_connect_address,dbname,username,password)
         if(get_pg_role(cn_url) == 'primary'):
@@ -644,12 +648,32 @@ if __name__ == '__main__':
 
 
 
+创建该脚本的service配置文件`/etc/systemd/system/citus_controller.service`
+
+```
+[Unit]
+Description=Auto update primary worker ip in Citus CN
+After=syslog.target network.target
+ 
+[Service]
+Type=simple
+User=postgres
+Group=postgres
+ExecStart=/bin/python /pgsql/citus_controller.py -c /etc/patroni.yml
+KillMode=process
+TimeoutSec=30
+Restart=no
+ 
+[Install]
+WantedBy=multi-user.targ
+```
+
+
+
 在cn主备节点上都启动Worker流量自动切换脚本
 
 ```
-su - postgres
-cd /pgsql
-python citus_controller.py -c citus_controller.yml
+systemctl start citus_controller
 ```
 
 

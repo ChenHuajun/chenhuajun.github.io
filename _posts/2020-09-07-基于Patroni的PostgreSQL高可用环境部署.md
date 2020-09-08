@@ -372,7 +372,7 @@ Patroni在特定场景下会执行一些自动化动作，目的是为了保障�
 
 为了预防etcd集群故障带来的严重影响，可以设置比较大的`retry_timeout`参数，`retry_timeout`参数控制操作DCS和PostgreSQL的重试时间。当etcd故障后，只要在`retry_timeout`设置的超时时间到达之前恢复正常，就不会影响PG。 但是把`retry_timeout`参数调大也有弊端，这增加了脑裂的风险。因为`retry_timeout`的大小某种程度上决定了网络分区时可能出现的”双主“的持续时间。
 
-那么，有没有手段防止脑裂呢?
+那么，有没有更安全的手段防止脑裂呢?
 
 有一个很简单的办法，我们设置比较大的`retry_timeout`的同时，把PostgreSQL集群配置成同步模式，代价是降低一点性能。根据PG集群的架构，具体设置如下
 
@@ -786,7 +786,9 @@ systemctl start keepalived
 
 ### 6.4 haproxy
 
-下面配置通过haproxy访问一主两备PG集群的示例。
+haproxy作为服务代理和Patroni配套使用可以很方便地支持failover，读写分离和负载均衡，也是Patroni社区作为Demo的方案。缺点是haproxy本身也会占用资源，所有数据流量都经过haproxy，性能上会有一定损耗。
+
+下面配置通过haproxy访问一主两备PG集群的例子。
 
 
 
@@ -831,7 +833,7 @@ listen pgsql
 
 listen pgsql_read
     bind *:6000
-    option httpchk GET /replica
+    option httpchk /replica
     http-check expect status 200
     default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions
     server postgresql_192.168.234.201_5432 192.168.234.201:5432 maxconn 100 check port 8008
@@ -889,29 +891,30 @@ systemctl start keepalived
 
 
 
-做个简单的测试，从node4上通过haproxy的5000端口访问PG，会连到主库上
+下面做个简单的测试。从node4上通过haproxy的5000端口访问PG，会连到主库上
 
 ```
-[postgres@node4 ~]$ psql "host=192.168.234.210 port=5000 password=123456" -c 'select inet_server_addr()'
- inet_server_addr
-------------------
- 192.168.234.201
+[postgres@node4 ~]$ psql "host=192.168.234.210 port=5000 password=123456" -c 'select inet_server_addr(),pg_is_in_recovery()'
+ inet_server_addr | pg_is_in_recovery
+------------------+-------------------
+ 192.168.234.201  | f
 (1 row)
 ```
 
 通过haproxy的6000端口访问PG，会轮询连接2个备库
 
 ```
-[postgres@node4 ~]$ psql "host=192.168.234.210 port=6000 password=123456" -c 'select inet_server_addr()'
- inet_server_addr
-------------------
- 192.168.234.202
+[postgres@node4 ~]$ psql "host=192.168.234.210 port=6000 password=123456" -c 'select inet_server_addr(),pg_is_in_recovery()'
+ inet_server_addr | pg_is_in_recovery
+------------------+-------------------
+ 192.168.234.202  | t
 (1 row)
 
-[postgres@node4 ~]$ psql "host=192.168.234.210 port=6000 password=123456" -c 'select inet_server_addr()'
- inet_server_addr
-------------------
- 192.168.234.203
+
+[postgres@node4 ~]$ psql "host=192.168.234.210 port=6000 password=123456" -c 'select inet_server_addr(),pg_is_in_recovery()'
+ inet_server_addr | pg_is_in_recovery
+------------------+-------------------
+ 192.168.234.203  | t
 (1 row)
 ```
 
@@ -921,9 +924,10 @@ haproxy部署后，可以通过它的web接口 http://192.168.234.210:7000/查�
 
 
 
-### 7. 参考
+## 7. 参考
 
 - https://patroni.readthedocs.io/en/latest/
+
 - http://blogs.sungeek.net/unixwiz/2018/09/02/centos-7-postgresql-10-patroni/
 - https://scalegrid.io/blog/managing-high-availability-in-postgresql-part-1/
 - https://jdbc.postgresql.org/documentation/head/connect.html#connection-parameters
