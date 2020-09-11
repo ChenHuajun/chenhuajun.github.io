@@ -4,7 +4,11 @@
 
 ## 1. 前言
 
-PG的开源HA工具有很多种，下面几种算是比较常用的
+PostgreSQL是一款功能，性能，可靠性都可以和高端的国外商业数据库相媲美的开源数据库。而且PostgreSQL的许可和生态完全开放，不被任何一个单一的公司或国家所操控，保证了使用者没有后顾之忧。国内越来越多的企业开始用PostgreSQL代替原来昂贵的国外商业数据库。 
+
+在部署PostgreSQL到生产环境中时，选择适合的高可用方案是一项必不可少的工作。本文介绍基于Patroni的PostgreSQL高可用的部署方法，供大家参考。
+
+PostgreSQL的开源HA工具有很多种，下面几种算是比较常用的
 
 - PAF(PostgreSQL Automatic Failover)
 - repmgr
@@ -14,9 +18,24 @@ PG的开源HA工具有很多种，下面几种算是比较常用的
 
 
 
-其中Patroni采用DCS(Distributed Configuration Store，比如etcd，ZooKeeper，Consul等)存储元数据，能够严格的保障元数据的一致性，可靠性高；而且它的功能也比较强大。
+其中Patroni不仅简单易用而且功能非常强大。
 
-因此个人推荐使用Patroni（只有2台机器无法部署etcd的情况可以考虑其它方案）。本文介绍基于Patroni的PostgreSQL高可用的部署。 
+- 支持自动failover和按需switchover
+- 支持一个和多个备节点
+- 支持级联复制
+- 支持同步复制，异步复制
+- 支持同步复制下备库故障时自动降级为异步复制（功效类似于MySQL的半同步，但是更加智能）
+- 支持控制指定节点是否参与选主，是否参与负载均衡以及是否可以成为同步备机
+- 支持通过`pg_rewind`自动修复旧主
+- 支持多种方式初始化集群和重建备机，包括`pg_basebackup`和支持`wal_e`，`pgBackRest`，`barman`等备份工具的自定义脚本
+- 支持自定义外部callback脚本
+- 支持REST API
+- 支持通过watchdog防止脑裂
+- 支持k8s，docker等容器化环境部署
+- 支持多种常见DCS(Distributed Configuration Store)存储元数据，包括etcd，ZooKeeper，Consul，Kubernetes
+
+
+因此，除非只有2台机器没有多余机器部署DCS的情况，Patroni是一款非常值得推荐的PostgreSQL高可用工具。下面将详细介绍基于Patroni搭建PostgreSQL高可用环境的步骤。
 
 
 
@@ -25,11 +44,8 @@ PG的开源HA工具有很多种，下面几种算是比较常用的
 **主要软件**
 
 - CentOS 7.8
-
 - PostgreSQL 12
-
 - Patroni 1.6.5
-
 - etcd 3.3.25
 
 
@@ -79,8 +95,7 @@ iptables -F
 
 ## 3. etcd部署
 
-因为本文的主题不是etcd的高可用，所以只在node4上部署单节点的etcd用于实验。部署步骤如下
-
+因为本文的主题不是etcd的高可用，所以只在node4上部署单节点的etcd用于实验。生产环境至少需要部署3个节点，可以使用独立的机器也可以和数据库部署在一起。etcd的部署步骤如下
 
 
 安装需要的包
@@ -244,6 +259,10 @@ postgresql:
       username: postgres
       password: "123456"
 
+  basebackup:
+    max-rate: 100M
+    checkpoint: fast
+
 tags:
     nofailover: false
     noloadbalance: false
@@ -368,9 +387,9 @@ Patroni在特定场景下会执行一些自动化动作，目的是为了保障�
 
 当Patroni无法连接到etcd时，有一种可能是出现了网络分区。为了防止分区下产生脑裂，如果本机的PG是主库Patroni会把PG降级为备库。
 
-但是，这种做法可能导致在etcd集群故障(包括到etcd的网络故障)时集群中将全部都是备库，业务无法写入数据。这就要求etcd集群具有非常高的可用性，特别是当我们用一套中心的etcd集群管理几百几千套PG的时候。
+但是，这种做法可能导致在etcd集群故障(包括到etcd的网络故障)时PostgreSQL集群中将全部都是备库，业务无法写入数据。这就要求etcd集群具有非常高的可用性，特别是当我们用一套中心的etcd集群管理几百几千套PG集群的时候。
 
-为了预防etcd集群故障带来的严重影响，可以设置比较大的`retry_timeout`参数，`retry_timeout`参数控制操作DCS和PostgreSQL的重试时间。当etcd故障后，只要在`retry_timeout`设置的超时时间到达之前恢复正常，就不会影响PG。 但是把`retry_timeout`参数调大也有弊端，这增加了脑裂的风险。因为`retry_timeout`的大小某种程度上决定了网络分区时可能出现的”双主“的持续时间。
+当我们使用集中式的一套etcd集群管理很多套PG集群时，为了预防etcd集群故障带来的严重影响，可以考虑设置比较大的`retry_timeout`参数。`retry_timeout`参数控制操作DCS和PostgreSQL的错误重试时间。当etcd故障后，只要在`retry_timeout`设置的重试超时时间到达之前恢复正常，就不会影响PG。 但是把`retry_timeout`参数调大也有弊端，这增加了脑裂的风险。因为`retry_timeout`某种程度上决定了网络分区时可能出现的”双主“的时间窗口的大小。
 
 那么，有没有更安全的手段防止脑裂呢?
 
@@ -833,7 +852,7 @@ listen pgsql
 
 listen pgsql_read
     bind *:6000
-    option httpchk /replica
+    option httpchk GET /replica
     http-check expect status 200
     default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions
     server postgresql_192.168.234.201_5432 192.168.234.201:5432 maxconn 100 check port 8008
@@ -927,10 +946,7 @@ haproxy部署后，可以通过它的web接口 http://192.168.234.210:7000/查�
 ## 7. 参考
 
 - https://patroni.readthedocs.io/en/latest/
-
 - http://blogs.sungeek.net/unixwiz/2018/09/02/centos-7-postgresql-10-patroni/
 - https://scalegrid.io/blog/managing-high-availability-in-postgresql-part-1/
 - https://jdbc.postgresql.org/documentation/head/connect.html#connection-parameters
-
 - https://www.percona.com/blog/2019/10/23/seamless-application-failover-using-libpq-features-in-postgresql/
-
