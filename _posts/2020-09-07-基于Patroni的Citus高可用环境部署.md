@@ -167,7 +167,7 @@ iptables -F
 
 ## 4. etcd部署
 
-因为本文的主题不是etcd的高可用，所以只在node4上部署单节点的etcd用于实验。部署步骤如下
+因为本文的主题不是etcd的高可用，所以只在node4上部署单节点的etcd用于实验。生产环境至少需要3台独立的机器，也可以和数据库部署在一起。etcd的部署步骤如下
 
 
 
@@ -339,6 +339,10 @@ postgresql:
       username: postgres
       password: "123456"
 
+  basebackup:
+    max-rate: 100M
+    checkpoint: fast
+
 tags:
     nofailover: false
     noloadbalance: false
@@ -441,13 +445,21 @@ SELECT * from master_add_node('192.168.234.204', 5432, 1, 'primary');
 
 
 
-在cn的主备节点上，创建`~postgres/.pgpass` 文件，支持CN免密连接Worker。
+在Worker的主备节点上分别修改`/pgsql/data/pg_hba.conf`配置文件，以下内容添加到其它配置项前面允许CN免密连接Worker。
 
 ```
-#hostname:port:database:username:password
-192.168.234.203:5432:postgres:postgres:123456
-192.168.234.204:5432:postgres:postgres:123456
+host all all 192.168.234.201/32 trust
+host all all 192.168.234.202/32 trust
 ```
+
+修改后重新加载配置
+
+```
+su - postgres
+pg_ctl reload
+```
+
+注:也可以通过在CN上设置`~postgres/.pgpass` 实现免密，但是没有上面的方式维护方便。
 
 
 
@@ -457,6 +469,7 @@ SELECT * from master_add_node('192.168.234.204', 5432, 1, 'primary');
 create table tb1(id int primary key,c1 text);
 set citus.shard_count = 64;
 select create_distributed_table('tb1','id');
+select * from tb1;
 ```
 
 
@@ -501,7 +514,7 @@ postgresql:
 
 创建worker流量自动切换脚本`/pgsql/citus_controller.py`
 
-```
+```python
 #!/usr/bin/env python2
 # -*- coding: utf-8 -*-
 
@@ -709,22 +722,14 @@ SELECT * from master_add_node('192.168.234.211', 5432, 1, 'secondary');
 
 
 
-在CN的主备节点上，创建`~postgres/.pgpass` 文件，支持CN免密连接Worker。
-
-```
-#hostname:port:database:username:password
-192.168.234.210:5432:postgres:postgres:123456
-192.168.234.211:5432:postgres:postgres:123456
-```
-
-
-
-为了让CN备库连接到secondary的worker，还需要再CN备库上设置以下参数
+为了让CN备库连接到secondary的worker，还需要在CN备库上设置以下参数
 
 ```
 alter system set citus.use_secondary_nodes=always;
 select pg_reload_conf();
 ```
+
+这个参数的变更只对新创建的会话生效，如果希望立即生效，需要在修改参数后杀掉已有会话。
 
 
 
@@ -770,10 +775,11 @@ postgres=# explain select * from tb1;
 
 创建动态设置参数的`/pgsql/switch_use_secondary_nodes.sh`
 
-```
+```shell
 #!/bin/bash
 
 DBNAME=postgres
+KILL_ALL_SQL="select pg_terminate_backend(pid) from pg_stat_activity  where backend_type='client backend' and application_name <> 'Patroni' and pid <> pg_backend_pid()"
 
 action=$1
 role=$2
@@ -788,21 +794,38 @@ log()
 alter_use_secondary_nodes()
 {
   value="$1"
-  psql -d ${DBNAME} -c "alter system set citus.use_secondary_nodes=${value}"
+  oldvalue=`psql -d postgres -Atc "show citus.use_secondary_nodes"`
+  if [ "$value" = "$oldvalue" ] ; then
+    log "old value of use_secondary_nodes already be '${value}', skip change"
+	return
+  fi
+
+  psql -d ${DBNAME} -c "alter system set citus.use_secondary_nodes=${value}" >/dev/null
   rc=$?
   if [ $rc -ne 0 ] ;then
     log "fail to alter use_secondary_nodes to '${value}' rc=$rc"
     exit 1
   fi
 
-  psql -d ${DBNAME} -c 'select pg_reload_conf()'
+  psql -d ${DBNAME} -c 'select pg_reload_conf()' >/dev/null
   rc=$?
   if [ $rc -ne 0 ] ;then
     log "fail to call pg_reload_conf() rc=$rc"
     exit 1
   fi
 
-  log "alter use_secondary_nodes to '${value}'"
+  log "changed use_secondary_nodes to '${value}'"
+
+  ## kill all existing connections
+  killed_conns=`psql -d ${DBNAME} -Atc "${KILL_ALL_SQL}" | wc -l`
+  rc=$?
+  if [ $rc -ne 0 ] ;then
+    log "failed to kill connections rc=$rc"
+    exit 1
+  fi
+  
+  log "killed ${killed_conns} connections"
+
 }
 
 log "switch_use_secondary_nodes start args:'$*'"
@@ -827,7 +850,6 @@ case $action in
     exit 1
     ;;
 esac
-
 ```
 
 
@@ -848,7 +870,7 @@ postgresql:
 所有节点的Patroni配置文件都修改后，重新加载Patroni配置
 
 ```
-patronictl reload pgsql
+patronictl reload cn
 ```
 
 CN上执行switchover后，可以看到`use_secondary_nodes`参数发生了修改
@@ -856,16 +878,10 @@ CN上执行switchover后，可以看到`use_secondary_nodes`参数发生了修�
 /var/log/messages:
 
 ```
-Sep  7 02:27:17 node1 postgres: switch_use_secondary_nodes: switch_use_secondary_nodes start args:'on_role_change replica cn'
-Sep  7 02:27:17 node1 patroni: ALTER SYSTEM
-Sep  7 02:27:17 node1 patroni: pg_reload_conf
-Sep  7 02:27:17 node1 patroni: ----------------
-Sep  7 02:27:17 node1 patroni: t
-Sep  7 02:27:17 node1 patroni: (1 行记录)
-Sep  7 02:27:17 node1 postgres: switch_use_secondary_nodes: alter use_secondary_nodes to 'always'
+Sep 10 00:10:25 node2 postgres: switch_use_secondary_nodes: switch_use_secondary_nodes start args:'on_role_change replica cn'
+Sep 10 00:10:25 node2 postgres: switch_use_secondary_nodes: changed use_secondary_nodes to 'always'
+Sep 10 00:10:25 node2 postgres: switch_use_secondary_nodes: killed 0 connections
 ```
-
-
 
 
 
