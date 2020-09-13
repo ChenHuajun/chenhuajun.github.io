@@ -2,7 +2,7 @@
 
 ## 1. 前言
 
-Citus是一个非常实用的能够对PostgreSQL进行水平扩展的解决方案，或者说是一款基于PostgreSQL的分布式HTAP数据库。本文简单说明Citus的高可用技术方案，并实际演示一下搭建Citus HA环境的步骤。
+Citus是一个非常实用的能够使PostgreSQL具有进行水平扩展能力的插件，或者说是一款以PostgreSQL插件形式部署的基于PostgreSQL的分布式HTAP数据库。本文简单说明Citus的高可用技术方案，并实际演示基于Patroni搭建Citus HA环境的步骤。
 
 
 
@@ -12,7 +12,7 @@ Citus是一个非常实用的能够对PostgreSQL进行水平扩展的解决方�
 
 Citus集群由一个CN节点和N个Worker节点组成。CN节点的高可用可以使用任何通用的PG 高可用方案，即为CN节点通过流复制配置主备2台PG机器；Worker节点的高可用除了可以像CN一样采用PG原生的高可用方案，还支持另一种多副本分片的高可用方案。
 
-多副本高可用方案是Citus早期版本默认的Worker高可用方案（当时`citus.shard_count`默认值为2），这种方案部署非常简单，而且坏一个Worker节点也不影响业务。在多副本高可用中，每次写入数据时，CN节点需要在2个Worker上分别写数据，这也带来一系列不利的地方。
+多副本高可用方案是Citus早期版本默认的Worker高可用方案（当时`citus.shard_count`默认值为2），这种方案部署非常简单，而且坏一个Worker节点也不影响业务。采用多副本高可用方案时，每次写入数据，CN节点需要在2个Worker上分别写数据，这也带来一系列不利的地方。
 
 1. 数据写入的性能下降
 2. 对多个副本的数据一致性的保障也没有PG原生的流复制强
@@ -56,7 +56,7 @@ PG 主备切换后，访问数据库的客户端也要相应地连接到新的�
 
    - 缺点
       - 性能损耗
-      - 需要配置haproxy自身的HA
+      - 需要配置HAProxy自身的HA
 
 - VIP
 
@@ -264,6 +264,7 @@ After=syslog.target network.target
 Type=simple
 User=postgres
 Group=postgres
+#StandardOutput=syslog
 ExecStart=/usr/bin/patroni /etc/patroni.yml
 ExecReload=/bin/kill -s HUP $MAINPID
 KillMode=process
@@ -271,7 +272,7 @@ TimeoutSec=30
 Restart=no
  
 [Install]
-WantedBy=multi-user.targ
+WantedBy=multi-user.target
 ```
 
 
@@ -679,7 +680,7 @@ TimeoutSec=30
 Restart=no
  
 [Install]
-WantedBy=multi-user.targ
+WantedBy=multi-user.target
 ```
 
 

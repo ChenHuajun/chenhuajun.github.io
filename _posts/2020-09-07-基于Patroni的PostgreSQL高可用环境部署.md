@@ -190,6 +190,7 @@ After=syslog.target network.target
 Type=simple
 User=postgres
 Group=postgres
+#StandardOutput=syslog
 ExecStart=/usr/bin/patroni /etc/patroni.yml
 ExecReload=/bin/kill -s HUP $MAINPID
 KillMode=process
@@ -197,7 +198,7 @@ TimeoutSec=30
 Restart=no
  
 [Install]
-WantedBy=multi-user.targ
+WantedBy=multi-user.target
 ```
 
 
@@ -415,6 +416,7 @@ After=syslog.target network.target
 Type=simple
 User=postgres
 Group=postgres
+#StandardOutput=syslog
 ExecStartPre=-/usr/bin/sudo /sbin/modprobe softdog
 ExecStartPre=-/usr/bin/sudo /bin/chown postgres /dev/watchdog
 ExecStart=/usr/bin/patroni /etc/patroni.yml
@@ -424,7 +426,7 @@ TimeoutSec=30
 Restart=no
  
 [Install]
-WantedBy=multi-user.targ
+WantedBy=multi-user.target
 ```
 
 设置Patroni自启动
@@ -446,7 +448,7 @@ watchdog:
 
 `safety_margin`指如果Patroni没有及时更新watchdog，watchdog会在Leader key过期前多久触发重启。在本例的配置下(ttl=30，loop_wait=10，safety_margin=5)下，patroni进程每隔10秒（`loop_wait`）都会更新Leader key和watchdog。如果Leader节点异常导致patroni进程无法及时更新watchdog，会在Leader key过期的前5秒触发重启。重启如果在5秒之内完成，Leader节点有机会再次获得Leader锁，否则Leader key过期后，由备库通过选举选出新的Leader。
 
-这套机制基本上可以保证不会出现"双主"，但是这个保证是依赖于watchdog的可靠性的，从生产实践上这个保证对绝大部分场景可能是足够的，但是从理论难以证明它100%可靠。
+这套机制基本上可以保证不会出现"双主"，但是这个保证是依赖于watchdog的可靠性的，从生产实践上这个保证对绝大部分场景可能是足够的，但是从理论上难以证明它100%可靠。
 
 另一方面，自动重启机器的方式会不会太暴力导致"误杀"呢？比如由于突发的业务访问导致机器负载过高，进而导致patroni进程不能及时分配到CPU资源，此时自动重启机器就未必是我们期望的行为。
 
@@ -472,9 +474,9 @@ synchronous_mode:true
 patronictl edit-config -s 'synchronous_mode=true'
 ```
 
-此配置下，如果同步备库临时不可用，Patroni会把主库的复制模式降级成了异步复制，确保服务不中断。效果类似于MySQL的半同步复制，但是相比MySQL使用固定的超时时间控制复制降级，这种方式更加智能，同时具有防脑裂的功效。
+此配置下，如果同步备库临时不可用，Patroni会把主库的复制模式降级成了异步复制，确保服务不中断。效果类似于MySQL的半同步复制，但是相比MySQL使用固定的超时时间控制复制降级，这种方式更加智能，同时还具有防脑裂的功效。
 
-在同步模式下，只有同步备库具有被提升为主库的资格。因此如果主库被降级为异步复制，即使failover被触发也无法成功，不会出现“双主”。如果主库没有被降级为异步复制，那么即使出现“双主”，由于旧主处于同步复制模式，数据无法被写入，也不会出现“双写”。
+在同步模式下，只有同步备库具有被提升为主库的资格。因此如果主库被降级为异步复制，由于没有同步备库作为候选主库failover不会被触发，也就不会出现“双主”。如果主库没有被降级为异步复制，那么即使出现“双主”，由于旧主处于同步复制模式，数据无法被写入，也不会出现“双写”。
 
 Patroni通过动态调整PostgreSQL参数`synchronous_standby_names`控制同步异步复制的切换。并且Patroni会把同步的状态记录到etcd中，确保同步状态在Patroni集群中的一致性。
 
@@ -485,7 +487,7 @@ Patroni通过动态调整PostgreSQL参数`synchronous_standby_names`控制同步
 {"leader":"pg1","sync_standby":"pg2"}
 ```
 
-备库无法连接主库后，主库临时降级为异步复制的元数据如下：
+备库故障导致主库临时降级为异步复制的元数据如下：
 
 ```
 [root@node4 ~]# etcdctl get /service/cn/sync
@@ -517,7 +519,7 @@ tags:
 
 ### 4.2 etcd不可访问的影响
 
-当Patroni无法访问etcd时，将不能确认自己所处的角色，为了防止这种状态下产生脑裂，如果本机的PG是主库Patroni会把PG降级为备库。如果集群中所有Patroni节点都无法访问etcd，集群中将全部都是备库，业务无法写入数据。这就要求etcd集群具有非常高的可用性，特别是当我们用一套中心的etcd集群管理几百几千套PG集群的时候。
+当Patroni无法访问etcd时，将不能确认自己所处的角色。为了防止这种状态下产生脑裂，如果本机的PG是主库，Patroni会把PG降级为备库。如果集群中所有Patroni节点都无法访问etcd，集群中将全部都是备库，业务无法写入数据。这就要求etcd集群具有非常高的可用性，特别是当我们用一套中心的etcd集群管理几百几千套PG集群的时候。
 
 当我们使用集中式的一套etcd集群管理很多套PG集群时，为了预防etcd集群故障带来的严重影响，可以考虑设置超大的`retry_timeout`参数，比如1万天，同时通过同步复制模式防止脑裂。
 
@@ -1092,7 +1094,7 @@ slots:
 
 
 
-对于已配置好的级联集群，可以动态修改`standby_cluster`设置，把主集群变成备集群，以及把备集群变成主集群。
+对于已配置好的级联集群，可以使用`patronictl edit-config`命令动态添加`standby_cluster`设置把主集群变成备集群；以及删除`standby_cluster`设置把备集群变成主集群。
 
 ```
 standby_cluster:
