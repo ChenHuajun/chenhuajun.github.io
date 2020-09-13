@@ -265,6 +265,7 @@ Type=simple
 User=postgres
 Group=postgres
 ExecStart=/usr/bin/patroni /etc/patroni.yml
+ExecReload=/bin/kill -s HUP $MAINPID
 KillMode=process
 TimeoutSec=30
 Restart=no
@@ -312,7 +313,7 @@ bootstrap:
         max_connections: "100"
         max_prepared_transactions: "100"
         shared_preload_libraries: "citus"
-        citus.node_conninfo: "sslmode: prefer"
+        citus.node_conninfo: "sslmode=prefer"
         citus.replication_model: streaming
         citus.task_assignment_policy: round-robin
 
@@ -410,7 +411,7 @@ systemctl start patroni
 echo 'export PATRONICTL_CONFIG_FILE=/etc/patroni.yml' >/etc/profile.d/patroni.sh
 ```
 
-添加以下环境变量到`~postgres/.bash_profile`，。
+添加以下环境变量到`~postgres/.bash_profile`
 
 ```
 export PGDATA=/pgsql/data

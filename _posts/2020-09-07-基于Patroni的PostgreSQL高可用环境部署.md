@@ -10,7 +10,7 @@ PostgreSQL是一款功能，性能，可靠性都可以和高端的国外商业�
 
 PostgreSQL的开源HA工具有很多种，下面几种算是比较常用的
 
-- PAF(PostgreSQL Automatic Failover)
+- PAF(PostgreSQL Automatic Failomianver)
 - repmgr
 - Patroni
 
@@ -191,6 +191,7 @@ Type=simple
 User=postgres
 Group=postgres
 ExecStart=/usr/bin/patroni /etc/patroni.yml
+ExecReload=/bin/kill -s HUP $MAINPID
 KillMode=process
 TimeoutSec=30
 Restart=no
@@ -231,7 +232,7 @@ bootstrap:
         port: 5432
         wal_level: logical
         hot_standby: "on"
-        wal_keep_segments: 1000
+        wal_keep_segments: 100
         max_wal_senders: 10
         max_replication_slots: 10
         wal_log_hints: "on"
@@ -348,15 +349,20 @@ systemctl start patroni
 
 
 
-为了方便日常操作，添加以下环境变量到`~postgres/.bash_profile`。
+为了方便日常操作，设置全局环境变量`PATRONICTL_CONFIG_FILE`
 
 ```
-export PATRONICTL_CONFIG_FILE=/etc/patroni.yml
+echo 'export PATRONICTL_CONFIG_FILE=/etc/patroni.yml' >/etc/profile.d/patroni.sh
+```
+
+添加以下环境变量到`~postgres/.bash_profile`
+
+```
 export PGDATA=/pgsql/data
 export PATH=/usr/pgsql-12/bin:$PATH
 ```
 
-设置postgres拥有sudoer权限
+设置postgres拥有免密的sudoer权限
 
 ```
 echo 'postgres        ALL=(ALL)       NOPASSWD: ALL'> /etc/sudoers.d/postgres
@@ -364,9 +370,9 @@ echo 'postgres        ALL=(ALL)       NOPASSWD: ALL'> /etc/sudoers.d/postgres
 
 
 
-## 4. Patroni的自动化动作
+## 4. 自动切换和脑裂防护
 
-Patroni在特定场景下会执行一些自动化动作，目的是为了保障服务的可用性以及防止脑裂。
+Patroni在主库故障时会自动执行failover，确保服务的高可用。但是自动failover如果控制不当会有产生脑裂的风险。因此Patroni在保障服务的可用性和防止脑裂的双重目标下会在特定场景下执行一些自动化动作。
 
 | 故障位置 | 场景                               | Patroni的动作                                                |
 | -------- | ---------------------------------- | ------------------------------------------------------------ |
@@ -374,6 +380,7 @@ Patroni在特定场景下会执行一些自动化动作，目的是为了保障�
 | 备库     | 停止备库Patroni                    | 停止备库PG                                                   |
 | 备库     | 强杀备库Patroni（或Patroni crash） | 无操作                                                       |
 | 备库     | 备库无法连接etcd                   | 无操作                                                       |
+| 备库     | 非Leader角色但是PG处于生产模式     | 重启PG并切换到恢复模式作为备库运行                           |
 | 主库     | 主库PG停止                         | 重启PG，重启超过`master_start_timeout`设定时间，进行主备切换 |
 | 主库     | 停止主库Patroni                    | 停止主库PG，并触发failover                                   |
 | 主库     | 强杀主库Patroni（或Patroni crash） | 触发failover，此时出现"双主"                                 |
@@ -383,56 +390,102 @@ Patroni在特定场景下会执行一些自动化动作，目的是为了保障�
 
 
 
-### 4.1 脑裂防护
+### 4.1 Patroni如何防止脑裂
 
-当Patroni无法连接到etcd时，有一种可能是出现了网络分区。为了防止分区下产生脑裂，如果本机的PG是主库Patroni会把PG降级为备库。
+部署在数据库节点上的patroni进程会执行一些保护操作，确保不会出现多个“主库”
 
-但是，这种做法可能导致在etcd集群故障(包括到etcd的网络故障)时PostgreSQL集群中将全部都是备库，业务无法写入数据。这就要求etcd集群具有非常高的可用性，特别是当我们用一套中心的etcd集群管理几百几千套PG集群的时候。
+1. 非Leader节点的PG处于生产模式时，重启PG并切换到恢复模式作为备库运行
+2. Leader节点的patroni无法连接etcd时，不能确保自己仍然是Leader，将本机的PG降级为备库
+3. 正常停止patroni时，patroni会顺便把本机的PG进程也停掉
 
-当我们使用集中式的一套etcd集群管理很多套PG集群时，为了预防etcd集群故障带来的严重影响，可以考虑设置比较大的`retry_timeout`参数。`retry_timeout`参数控制操作DCS和PostgreSQL的错误重试时间。当etcd故障后，只要在`retry_timeout`设置的重试超时时间到达之前恢复正常，就不会影响PG。 但是把`retry_timeout`参数调大也有弊端，这增加了脑裂的风险。因为`retry_timeout`某种程度上决定了网络分区时可能出现的”双主“的时间窗口的大小。
+然而，当patroni进程自身无法正常工作时，以上的保护措施难以得到贯彻。比如patroni进程异常终止或主机临时hang等。
 
-那么，有没有更安全的手段防止脑裂呢?
-
-有一个很简单的办法，我们设置比较大的`retry_timeout`的同时，把PostgreSQL集群配置成同步模式，代价是降低一点性能。根据PG集群的架构，具体设置如下
+为了更可靠的防止脑裂，Patroni支持通过Linux的watchdog监视patroni进程的运行，当patroni进程无法正常往watchdog设备写入心跳时，由watchdog触发Linux重启。具体的配置方法如下
 
 
 
-**一主一备**
+设置Patroni的systemd service配置文件`/etc/systemd/system/patroni.service`
 
 ```
-retry_timeout:3600
+[Unit]
+Description=Runners to orchestrate a high-availability PostgreSQL
+After=syslog.target network.target
+ 
+[Service]
+Type=simple
+User=postgres
+Group=postgres
+ExecStartPre=-/usr/bin/sudo /sbin/modprobe softdog
+ExecStartPre=-/usr/bin/sudo /bin/chown postgres /dev/watchdog
+ExecStart=/usr/bin/patroni /etc/patroni.yml
+ExecReload=/bin/kill -s HUP $MAINPID
+KillMode=process
+TimeoutSec=30
+Restart=no
+ 
+[Install]
+WantedBy=multi-user.targ
+```
+
+设置Patroni自启动
+
+```
+systemctl enable patroni
+```
+
+
+
+修改Patroni配置文件`/etc/patroni.yml`，添加以下内容
+
+```
+watchdog:
+  mode: automatic # Allowed values: off, automatic, required
+  device: /dev/watchdog
+  safety_margin: 5
+```
+
+`safety_margin`指如果Patroni没有及时更新watchdog，watchdog会在Leader key过期前多久触发重启。在本例的配置下(ttl=30，loop_wait=10，safety_margin=5)下，patroni进程每隔10秒（`loop_wait`）都会更新Leader key和watchdog。如果Leader节点异常导致patroni进程无法及时更新watchdog，会在Leader key过期的前5秒触发重启。重启如果在5秒之内完成，Leader节点有机会再次获得Leader锁，否则Leader key过期后，由备库通过选举选出新的Leader。
+
+这套机制基本上可以保证不会出现"双主"，但是这个保证是依赖于watchdog的可靠性的，从生产实践上这个保证对绝大部分场景可能是足够的，但是从理论难以证明它100%可靠。
+
+另一方面，自动重启机器的方式会不会太暴力导致"误杀"呢？比如由于突发的业务访问导致机器负载过高，进而导致patroni进程不能及时分配到CPU资源，此时自动重启机器就未必是我们期望的行为。
+
+那么，有没有其它更可靠的防止脑裂的手段呢？
+
+
+
+### 4.2 利用PostgreSQL同步复制防止脑裂
+
+防止脑裂的另一个手段是把PostgreSQL集群配置成同步复制模式。利用同步复制模式下的主库在没有同步备库应答日志时写入会阻塞的特点，在数据库内部确保即使出现“双主”也不会发生"双写"。采用这种方式防止脑裂是最可靠最安全的，代价是同步复制相对异步复制会降低一点性能。具体设置方法如下
+
+
+
+初始运行Patroni时，在Patroni配置文件`/etc/patroni.yml`中设置同步模式
+
+```
 synchronous_mode:true
 ```
 
-此配置下，当出现网络故障导致主库无法连接etcd，但备库到etcd的访问正常时，备库会被提升为新主。也就是在`retry_timeout`的超时时间到达前出现了"双主"。但由于旧主的PG运行在同步模式下，应用的写入都会被阻塞，不会产生实质危害。新主的PG则被临时切换到了异步模式，应用可以正常写入数据。Patroni通过动态调整`synchronous_standby_names`控制同步异步复制的切换。
-
-
-
-我们可以在主节点上阻断etcd和Patroni restapi的端口在测试环境模拟这种网络故障
+对于已部署的Patroni可以通过patronictl命令修改配置
 
 ```
-iptables -I INPUT -p TCP --sport 2379 -j REJECT
-iptables -I INPUT -p TCP --dport 2379 -j REJECT
-iptables -I INPUT -p TCP --sport 8008 -j REJECT
-iptables -I INPUT -p TCP --dport 8008 -j REJECT
+patronictl edit-config -s 'synchronous_mode=true'
 ```
 
+此配置下，如果同步备库临时不可用，Patroni会把主库的复制模式降级成了异步复制，确保服务不中断。效果类似于MySQL的半同步复制，但是相比MySQL使用固定的超时时间控制复制降级，这种方式更加智能，同时具有防脑裂的功效。
 
+在同步模式下，只有同步备库具有被提升为主库的资格。因此如果主库被降级为异步复制，即使failover被触发也无法成功，不会出现“双主”。如果主库没有被降级为异步复制，那么即使出现“双主”，由于旧主处于同步复制模式，数据无法被写入，也不会出现“双写”。
 
-当etcd本身故障导致主备都无法访问时，在`retry_timeout`的超时时间到达前，主备库都在尝试重连etcd，不会对PG配置进行变更。
+Patroni通过动态调整PostgreSQL参数`synchronous_standby_names`控制同步异步复制的切换。并且Patroni会把同步的状态记录到etcd中，确保同步状态在Patroni集群中的一致性。
 
-
-
-如果由于同步备库临时不可用导致Patroni把降级成了异步复制，此期间主库又发生了网络分区故障，由于PG集群里没有同步备库，备库不会被提升新主。Patroni会把同步的配置记录到etcd中
-
-正常的同步模式的元数据如下：
+正常的同步模式的元数据示例如下：
 
 ```
 [root@node4 ~]# etcdctl get /service/cn/sync
 {"leader":"pg1","sync_standby":"pg2"}
 ```
 
-备库无法连接主库后，主库临近降级到异步的元数据如下：
+备库无法连接主库后，主库临时降级为异步复制的元数据如下：
 
 ```
 [root@node4 ~]# etcdctl get /service/cn/sync
@@ -441,29 +494,39 @@ iptables -I INPUT -p TCP --dport 8008 -j REJECT
 
 
 
-**一主两备**
+如果集群中包含3个以上的节点，还可以考虑采取更严格的同步策略，禁止Patroni把同步模式降级为异步。这样可以确保任何写入的数据至少存在于2个以上的节点。对数据安全要求极高的业务可以采用这种方式。
 
 ```
-retry_timeout:3600
 synchronous_mode:true
 synchronous_mode_strict:true
 ```
 
-一主两备架构下要想达到相同效果，需要额外设置`synchronous_mode_strict=true`，禁止Patroni把同步模式进行降级为异步。这也是最安全的防止脑裂的方式。
 
 
-
-**超过3节点的集群**
-
-如果集群中超过3个节点，选择其中3个节点按`一主两备`的方式，或者选择其中2个节点按`一主一备`的方式配置。其余节点作为"外挂的从库"，配置为不参与选主，也不作为同步备库。
+如果集群包含异地的灾备节点，可以根据需要配置该节点为不参与选主，不参与负载均衡，也不作为同步备库。
 
 ```
 tags:
     nofailover: true
-    noloadbalance: false
+    noloadbalance: true
     clonefrom: false
     nosync: true
 ```
+
+
+
+### 4.2 etcd不可访问的影响
+
+当Patroni无法访问etcd时，将不能确认自己所处的角色，为了防止这种状态下产生脑裂，如果本机的PG是主库Patroni会把PG降级为备库。如果集群中所有Patroni节点都无法访问etcd，集群中将全部都是备库，业务无法写入数据。这就要求etcd集群具有非常高的可用性，特别是当我们用一套中心的etcd集群管理几百几千套PG集群的时候。
+
+当我们使用集中式的一套etcd集群管理很多套PG集群时，为了预防etcd集群故障带来的严重影响，可以考虑设置超大的`retry_timeout`参数，比如1万天，同时通过同步复制模式防止脑裂。
+
+```
+retry_timeout:864000000
+synchronous_mode:true
+```
+
+`retry_timeout`用于控制操作DCS和PostgreSQL的重试超时。Patroni对需要重试的操作，除了时间上的限制还有重试次数的限制。对于PostgreSQL操作，目前似乎只有调用`GET /patroni`的REST API时会重试，而且最多只重试1次，所以把`retry_timeout`调大不会带来其他副作用。
 
 
 
@@ -504,7 +567,7 @@ Commands:
 
 
 
-### 5.1 PostgreSQL参数修改
+### 5.1 修改PostgreSQL参数
 
 修改个别节点的参数，可以执行`ALTER SYSTEM SET ...` SQL命令，比如临时打开某个节点的debug日志。对于需要统一配置的参数应该通过`patronictl edit-config`设置，确保全局一致，比如修改最大连接数。
 
@@ -529,6 +592,44 @@ patronictl edit-config -p 'max_connections=300'
 ```
  patronictl restart pgsql
 ```
+
+
+
+### 5.2 查看Patroni节点状态
+
+通常我们可以同`patronictl list`查看每个节点的状态。但是如果想要查看更详细的节点状态信息，需要调用REST API。比如在Leader锁过期时存活节点却无法成为Leader，查看详细的节点状态信息有助于调查原因。
+
+```
+curl -s http://127.0.0.1:8008/patroni | jq
+```
+
+输出示例如下：
+
+```
+[root@node2 ~]# curl -s http://127.0.0.1:8008/patroni | jq
+{
+  "database_system_identifier": "6870146304839171063",
+  "postmaster_start_time": "2020-09-13 09:56:06.359 CST",
+  "timeline": 23,
+  "cluster_unlocked": true,
+  "watchdog_failed": true,
+  "patroni": {
+    "scope": "cn",
+    "version": "1.6.5"
+  },
+  "state": "running",
+  "role": "replica",
+  "xlog": {
+    "received_location": 201326752,
+    "replayed_timestamp": null,
+    "paused": false,
+    "replayed_location": 201326752
+  },
+  "server_version": 120004
+}
+```
+
+上面的`"watchdog_failed": true`，代表使用了watchdog但是却无法访问watchdog设备，该节点无法被提升为Leader。
 
 
 
@@ -943,7 +1044,68 @@ haproxy部署后，可以通过它的web接口 http://192.168.234.210:7000/查�
 
 
 
-## 7. 参考
+## 7. 级联复制
+
+通常集群中所有的备库都从主库复制数据，但是特定的场景下我们可能需要部署级联复制。基于Patroni搭建的PG集群支持2种形式的级联复制。
+
+
+
+### 7. 1 集群内部的级联复制
+
+可以指定某个备库优先从指定成员而不是Leader节点复制数据。相应的配置示例如下：
+
+```
+tags:
+    replicatefrom: pg2
+```
+
+`replicatefrom`只对节点处于Replica角色时有效，并不影响该节点参与Leader选举并成为Leader。当`replicatefrom`指定的复制源节点故障时，Patroni会自动修改PG切换到从Leader节点复制。
+
+
+
+### 7.2 集群间的级联复制
+
+我们还可以创建一个只读的备集群，从另一个指定的PostgreSQL实例复制数据。这可以用于创建跨数据中心的灾备集群。相应的配置示例如下：
+
+初始创建一个备集群，可以在Patroni配置文件`/etc/patroni.yml`中加入以下配置
+
+```
+bootstrap:
+  dcs:
+    standby_cluster:
+      host: 192.168.234.210
+      port: 5432
+      primary_slot_name: slot1
+      create_replica_methods:
+      - basebackup
+```
+
+上面的`host`和`port`是上游复制源的主机和端口号，如果上游数据库是配置了读写VIP的PG集群，可以将读写VIP作为`host`避免主集群主备切换时影响备集群。
+
+复制槽选项`primary_slot_name`是可选的，如果配置了复制槽，需要同时在主集群上配置持久slot，确保在新主上始终保持slot。
+
+```
+slots:
+  slot1:
+    type: physical
+```
+
+
+
+对于已配置好的级联集群，可以动态修改`standby_cluster`设置，把主集群变成备集群，以及把备集群变成主集群。
+
+```
+standby_cluster:
+  host: 192.168.234.210
+  port: 5432
+  primary_slot_name: slot1
+  create_replica_methods:
+  - basebackup
+```
+
+
+
+## 8. 参考
 
 - https://patroni.readthedocs.io/en/latest/
 - http://blogs.sungeek.net/unixwiz/2018/09/02/centos-7-postgresql-10-patroni/
