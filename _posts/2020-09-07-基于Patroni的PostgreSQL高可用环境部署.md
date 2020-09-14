@@ -241,6 +241,7 @@ bootstrap:
   initdb:
   - encoding: UTF8
   - locale: C
+  - lc-ctype: zh_CN.UTF-8
   - data-checksums
 
   pg_hba:
@@ -277,7 +278,7 @@ tags:
 其他PG节点的patroni.yml需要相应修改下面3个参数
 
 - name
-  - node1~node4分别设置pg1~pg4
+  - `node1~node4`分别设置`pg1~pg4`
 - restapi.connect_address
   - 根据各自节点IP设置
 - postgresql.connect_address
