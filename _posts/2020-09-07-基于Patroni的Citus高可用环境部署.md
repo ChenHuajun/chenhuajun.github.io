@@ -99,7 +99,6 @@ PG 主备切换后，访问数据库的客户端也要相应地连接到新的�
 - CN通过Worker的实际IP连接Worekr主节点
 - CN上通过监控脚本检测Worker节点状态，Worker发生主备切换时动态修改Citus CN上的元数据
 
-​	
 
 **支持读写分离的架构**
 
@@ -321,6 +320,7 @@ bootstrap:
   initdb:
   - encoding: UTF8
   - locale: C
+  - lc-ctype: zh_CN.UTF-8
   - data-checksums
 
   pg_hba:
@@ -358,7 +358,7 @@ tags:
   - node1，node2设置为cn
   - node3，node4设置为wk1
 - name
-  - node1~node4分别设置pg1~pg4
+  - `node1~node4`分别设置`pg1~pg4`
 - restapi.connect_address
   - 根据各自节点IP设置
 - postgresql.connect_address
