@@ -93,7 +93,7 @@ iptables -F
 
 
 
-**etcd部署**
+## 3. etcd部署
 
 因为本文的主题不是etcd的高可用，所以只在node4上部署单节点的etcd用于实验。生产环境至少需要部署3个节点，可以使用独立的机器也可以和数据库部署在一起。etcd的部署步骤如下
 
@@ -140,7 +140,7 @@ systemctl enable etcd
 
 
 
-## 3. PostgreSQL + Patroni HA部署
+## 4. PostgreSQL + Patroni HA部署
 
 在需要运行PostgreSQL的实例上安装相关软件
 
@@ -372,7 +372,7 @@ echo 'postgres        ALL=(ALL)       NOPASSWD: ALL'> /etc/sudoers.d/postgres
 
 
 
-## 4. 自动切换和脑裂防护
+## 5. 自动切换和脑裂防护
 
 Patroni在主库故障时会自动执行failover，确保服务的高可用。但是自动failover如果控制不当会有产生脑裂的风险。因此Patroni在保障服务的可用性和防止脑裂的双重目标下会在特定场景下执行一些自动化动作。
 
@@ -392,7 +392,7 @@ Patroni在主库故障时会自动执行failover，确保服务的高可用。�
 
 
 
-### 4.1 Patroni如何防止脑裂
+### 5.1 Patroni如何防止脑裂
 
 部署在数据库节点上的patroni进程会执行一些保护操作，确保不会出现多个“主库”
 
@@ -457,7 +457,7 @@ watchdog:
 
 
 
-### 4.2 利用PostgreSQL同步复制防止脑裂
+### 5.2 利用PostgreSQL同步复制防止脑裂
 
 防止脑裂的另一个手段是把PostgreSQL集群配置成同步复制模式。利用同步复制模式下的主库在没有同步备库应答日志时写入会阻塞的特点，在数据库内部确保即使出现“双主”也不会发生"双写"。采用这种方式防止脑裂是最可靠最安全的，代价是同步复制相对异步复制会降低一点性能。具体设置方法如下
 
@@ -518,7 +518,7 @@ tags:
 
 
 
-### 4.2 etcd不可访问的影响
+### 5.3 etcd不可访问的影响
 
 当Patroni无法访问etcd时，将不能确认自己所处的角色。为了防止这种状态下产生脑裂，如果本机的PG是主库，Patroni会把PG降级为备库。如果集群中所有Patroni节点都无法访问etcd，集群中将全部都是备库，业务无法写入数据。这就要求etcd集群具有非常高的可用性，特别是当我们用一套中心的etcd集群管理几百几千套PG集群的时候。
 
@@ -533,7 +533,7 @@ synchronous_mode:true
 
 
 
-## 5. 日常操作
+## 6. 日常操作
 
 日常维护时可以通过`patronictl`命令控制Patroni和PostgreSQL，比如修改PotgreSQL参数。
 
@@ -570,7 +570,7 @@ Commands:
 
 
 
-### 5.1 修改PostgreSQL参数
+### 6.1 修改PostgreSQL参数
 
 修改个别节点的参数，可以执行`ALTER SYSTEM SET ...` SQL命令，比如临时打开某个节点的debug日志。对于需要统一配置的参数应该通过`patronictl edit-config`设置，确保全局一致，比如修改最大连接数。
 
@@ -598,7 +598,7 @@ patronictl edit-config -p 'max_connections=300'
 
 
 
-### 5.2 查看Patroni节点状态
+### 6.2 查看Patroni节点状态
 
 通常我们可以同`patronictl list`查看每个节点的状态。但是如果想要查看更详细的节点状态信息，需要调用REST API。比如在Leader锁过期时存活节点却无法成为Leader，查看详细的节点状态信息有助于调查原因。
 
@@ -636,7 +636,7 @@ curl -s http://127.0.0.1:8008/patroni | jq
 
 
 
-## 6. 客户端访问配置
+## 7. 客户端访问配置
 
 HA集群的主节点是动态的，主备发生切换时，客户端对数据库的访问也需要能够动态连接到新主上。有下面几种常见的实现方式，下面分别。
 
@@ -647,7 +647,7 @@ HA集群的主节点是动态的，主备发生切换时，客户端对数据库
 
 
 
-### 6.1 多主机URL
+### 7.1 多主机URL
 
 pgjdbc和libpq驱动可以在连接字符串中配置多个IP，由驱动识别数据库的主备角色，连接合适的节点。
 
@@ -695,7 +695,7 @@ conn=psycopg2.connect("postgres://192.168.234.201:5432,192.168.234.202:5432/post
 
 
 
-### 6.2 VIP(通过Patroni回调脚本实现VIP漂移）
+### 7.2 VIP(通过Patroni回调脚本实现VIP漂移）
 
 多主机URL的方式部署简单，但是不是每种语言的驱动都支持，而且如果数据库出现意外的“双主”，配置多主机URL的客户端在多个主上同时写入的概率比较高，而如果客户端通过VIP的方式访问则在VIP上又多了一层防护（这种风险一般在数据库的HA组件没防护好时发生，正如前面介绍的，如果我们配置的是Patroni的同步模式，基本上没有这个担忧）。
 
@@ -826,7 +826,7 @@ Sep  5 21:32:28 localvm postgres: loadvip: called arping to gateway 192.168.234.
 
 
 
-### 6.3 VIP(通过keepalived实现VIP漂移）
+### 7.3 VIP(通过keepalived实现VIP漂移）
 
 Patroni提供了用于健康检查的REST API，可以根据节点角色返回正常(**200**)和异常的HTTP状态码
 
@@ -907,7 +907,7 @@ systemctl start keepalived
 
 
 
-### 6.4 haproxy
+### 7.4 haproxy
 
 haproxy作为服务代理和Patroni配套使用可以很方便地支持failover，读写分离和负载均衡，也是Patroni社区作为Demo的方案。缺点是haproxy本身也会占用资源，所有数据流量都经过haproxy，性能上会有一定损耗。
 
@@ -1047,13 +1047,13 @@ haproxy部署后，可以通过它的web接口 http://192.168.234.210:7000/查�
 
 
 
-## 7. 级联复制
+## 8. 级联复制
 
 通常集群中所有的备库都从主库复制数据，但是特定的场景下我们可能需要部署级联复制。基于Patroni搭建的PG集群支持2种形式的级联复制。
 
 
 
-### 7. 1 集群内部的级联复制
+### 8. 1 集群内部的级联复制
 
 可以指定某个备库优先从指定成员而不是Leader节点复制数据。相应的配置示例如下：
 
@@ -1066,7 +1066,7 @@ tags:
 
 
 
-### 7.2 集群间的级联复制
+### 8.2 集群间的级联复制
 
 我们还可以创建一个只读的备集群，从另一个指定的PostgreSQL实例复制数据。这可以用于创建跨数据中心的灾备集群。相应的配置示例如下：
 
@@ -1108,7 +1108,7 @@ standby_cluster:
 
 
 
-## 8. 参考
+## 9. 参考
 
 - https://patroni.readthedocs.io/en/latest/
 - http://blogs.sungeek.net/unixwiz/2018/09/02/centos-7-postgresql-10-patroni/
