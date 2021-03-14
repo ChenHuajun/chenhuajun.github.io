@@ -2,7 +2,4 @@
 
 # 小桥河西的博客
 
-这里主要放博客的markdown文档。
-
-- [chinaunix上的博客地址](http://blog.chinaunix.net/uid/20726500.html)
-- [github.io上的博客地址](https://chenhuajun.github.io/)
+本人博客仓库已移到[blog_xqhx](https://github.com/ChenHuajun/blog_xqhx)，此仓库不再更新
